@@ -43,20 +43,13 @@ This project adheres strictly to the OpenEnv specification:
 - [x] **Phase 0 — Repo Setup:** Clean GitHub repo and proper folder structure initialized.
 - [x] **Phase 1 — Foundation:** FastAPI server running, `/reset` & `/step` endpoints implemented, Docker wrapper complete (port 7860), spaCy pre-installed.
 - [x] **Phase 2 — Data Engineering:** `build_dataset.py` implemented. A highly realistic, deterministic dataset containing 15 noisy email samples has been generated successfully along with a gold-truth manifest. Tested and verified for sensitive data matching.
+- [x] **Phase 3 — Core Environment (OpenEnv Engine):** `env/environment.py` and `env/models.py` created to strictly adhere to OpenEnv specifications using Pydantic validation. The simulated dataset is officially connected to the environment state engine, successfully managing tracking attributes (`current_chunk_index`, `utility_budget`, `steps_taken`), maintaining episode termination (`done`) logic bounds, and accurately connecting OpenEnv action structures (`action_type: redact, delete, bypass`) to FastAPI.
 
 ---
 
 ## 🚧 Remaining Work (Contribution Guide)
 
 For developers looking to continue the build, here are the sequential phases remaining:
-
-### Phase 3 — Core Environment (OpenEnv Engine)
-- **Implement** `env/environment.py`.
-- **Connect** the generated dataset (`dataset.jsonl`) to the environment logic.
-- **Implement state methods:** `reset()`, `step(action)`, `state()`.
-- **Maintain internal state variables:** `current_chunk_index`, `utility_budget`, `steps_taken`.
-- **Implement action handling:** `redact`, `delete`, `bypass`.
-- **Define** episode termination conditions (`done` flag logic).
 
 ### Phase 4 — Grader System
 - **Implement** `grader/grader.py`.
@@ -182,7 +175,7 @@ Advances the environment by taking an action (e.g., redacting text).
 **Request Body:**
 ```json
 {
-  "type": "redact",
+  "action_type": "redact",
   "content": "test@gmail.com"
 }
 ```

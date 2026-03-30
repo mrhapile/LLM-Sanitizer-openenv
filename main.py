@@ -1,19 +1,10 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from env.environment import VaultSanitizerEnv
+from env.models import Action
 
 app = FastAPI()
 
-# ---- Dummy Models (Phase 1 only) ----
-class Action(BaseModel):
-    type: str
-    content: str = ""
-
-# ---- Dummy State ----
-env_state = {
-    "step": 0
-}
-
-# ---- Endpoints ----
+env = VaultSanitizerEnv()
 
 @app.get("/")
 def root():
@@ -21,28 +12,20 @@ def root():
 
 @app.post("/reset")
 def reset():
-    env_state["step"] = 0
-    return {
-        "observation": {
-            "data_chunk": "Sample text with email test@gmail.com",
-            "risk_report": ["Possible email detected"],
-            "attempts_left": 3
-        }
-    }
+    obs = env.reset()
+    return {"observation": obs.dict()}
 
 @app.post("/step")
 def step(action: Action):
-    env_state["step"] += 1
+    obs, reward, done, info = env.step(action)
 
     return {
-        "observation": {
-            "data_chunk": "Updated sample",
-            "risk_report": [],
-            "attempts_left": 2
-        },
-        "reward": {
-            "score": 0.5
-        },
-        "done": False,
-        "info": {}
+        "observation": obs.dict() if obs else None,
+        "reward": reward.dict(),
+        "done": done,
+        "info": info
     }
+
+@app.get("/state")
+def state():
+    return env.state()
