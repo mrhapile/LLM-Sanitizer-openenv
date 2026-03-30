@@ -46,7 +46,12 @@ class VaultSanitizerEnv:
         )
 
     def step(self, action: Action):
-        if self.current_index >= len(self.dataset) or self.utility_budget <= 0:
+        # Halt immediately if any terminal condition has already been reached.
+        if (
+            self.current_index >= len(self.dataset)
+            or self.utility_budget <= 0
+            or self.steps_taken >= self.max_steps
+        ):
             return None, Reward(score=0.0), True, {}
 
         self.steps_taken += 1
