@@ -12,7 +12,7 @@ class VaultSanitizerEnv:
         self.gold = []
         self.current_index = 0
         self.utility_budget = 10
-        self.max_steps = 3
+        self.max_steps = 210
         self.steps_taken = 0
         self.grader = VaultGrader()
 

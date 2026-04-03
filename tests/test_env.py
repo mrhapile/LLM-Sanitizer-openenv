@@ -36,14 +36,21 @@ def test_step_returns_valid_response(env):
 # TEST 3: REWARD CHANGES
 # ---------------------------
 def test_reward_is_not_constant(env):
-    env.reset()
+    obs = env.reset()
 
     action1 = Action(action_type="bypass", content="bad output")
     _, reward1, _, _ = env.step(action1)
 
     env.reset()
 
-    action2 = Action(action_type="redact", content="Re: Urgent\n[REDACTED], the [REDACTED], needs access.\nEmail: [REDACTED]\nAPI_KEY=[REDACTED]\n---\nConfidential")
+    # Dynamically build a proper redaction from the first chunk's gold data
+    gold = env.grader.get_gold(0)
+    redacted = obs.data_chunk
+    for field in ["email", "phone", "api_key", "name", "role"]:
+        if gold[field] in redacted:
+            redacted = redacted.replace(gold[field], "[REDACTED]")
+
+    action2 = Action(action_type="redact", content=redacted)
     _, reward2, _, _ = env.step(action2)
 
     assert reward1.score != reward2.score
@@ -56,7 +63,7 @@ def test_done_triggers(env):
 
     done = False
 
-    for _ in range(20):  # more than dataset size
+    for _ in range(220):  # more than dataset size
         action = Action(action_type="bypass", content="test")
         _, _, done, _ = env.step(action)
         if done:
