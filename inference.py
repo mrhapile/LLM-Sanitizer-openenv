@@ -2,6 +2,8 @@ import os
 import random
 import re
 import json
+import time
+from collections import deque
 import requests
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -152,6 +154,36 @@ SYSTEM_PROMPT = (
 
 # --- AGENT DEFINITIONS ---
 
+class RequestRateLimiter:
+    def __init__(self, max_requests, window_seconds, max_total_requests=None):
+        self.max_requests = max(1, int(max_requests))
+        self.window_seconds = max(1, int(window_seconds))
+        self.max_total_requests = int(max_total_requests) if max_total_requests is not None else None
+        self.request_timestamps = deque()
+        self.total_requests = 0
+
+    def acquire(self):
+        if self.max_total_requests is not None and self.total_requests >= self.max_total_requests:
+            return False
+
+        now = time.time()
+        while self.request_timestamps and (now - self.request_timestamps[0]) >= self.window_seconds:
+            self.request_timestamps.popleft()
+
+        if len(self.request_timestamps) >= self.max_requests:
+            wait_for = self.window_seconds - (now - self.request_timestamps[0])
+            if wait_for > 0:
+                print(f"  [i] Rate limiter active. Sleeping {wait_for:.1f}s to respect provider quota...")
+                time.sleep(wait_for)
+
+            now = time.time()
+            while self.request_timestamps and (now - self.request_timestamps[0]) >= self.window_seconds:
+                self.request_timestamps.popleft()
+
+        self.request_timestamps.append(time.time())
+        self.total_requests += 1
+        return True
+
 def random_agent_logic(obs):
     """Establishes the absolute floor."""
     return {
@@ -188,11 +220,77 @@ def enhanced_agent_logic(obs):
 
     return {"action_type": "redact", "content": text}
 
-def llm_agent_logic(obs, client, model_name):
+
+def is_api_failure(error, error_response=None):
+    """Classify whether error is a true API failure (fallback-worthy) vs other issue."""
+    error_str = str(error).lower()
+    
+    network_keywords = ["connectionerror", "timeout", "bad gateway", "gateway timeout", "unable to connect"]
+    quota_keywords = ["429", "quota", "rate limit", "resource_exhausted"]
+    auth_keywords = ["401", "403", "unauthorized", "forbidden", "invalid_api_key", "invalid api key"]
+    
+    if any(kw in error_str for kw in network_keywords):
+        return True
+    if any(kw in error_str for kw in quota_keywords):
+        return True
+    if any(kw in error_str for kw in auth_keywords):
+        return True
+
+    if error_response:
+        code = getattr(error_response, "status_code", None)
+        if code in [429, 503, 502, 504]:
+            return True
+        if code in [401, 403]:
+            return True
+
+    return False
+
+
+def parse_json_forgiving(content):
+    """Try to extract and parse JSON from LLM response, with multiple recovery strategies."""
+    if content is None:
+        raise ValueError("Empty content")
+
+    if isinstance(content, dict):
+        return content
+
+    text = str(content).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json|JSON)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+    match = re.search(r"\{.*\}$", text, flags=re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not extract valid JSON from response: {content[:100]}")
+
+def llm_agent_logic(obs, client, model_name, rate_limiter=None):
     """The Frontier Agent."""
     user_msg = f"Data Chunk: {obs['data_chunk']}\nRisk Report: {obs['risk_report']}"
+    fallback_reason = None
     
     try:
+        if rate_limiter and not rate_limiter.acquire():
+            fallback_reason = "QUOTA_LIMIT"
+            print(f"  [*] FALLBACK[{fallback_reason}] LLM budget exhausted")
+            action = enhanced_agent_logic(obs)
+            action["is_fallback"] = True
+            return action
+
         response = client.chat.completions.create(
             model=model_name,
             messages=[
@@ -201,23 +299,41 @@ def llm_agent_logic(obs, client, model_name):
             ],
             response_format={"type": "json_object"}
         )
-        result = json.loads(response.choices[0].message.content)
+
+        content = None
+        if hasattr(response, "choices") and response.choices:
+            content = response.choices[0].message.content
+        else:
+            content = response
+
+        result = parse_json_forgiving(content)
         
         # Map any non-standard actions to valid environment actions
         action_type = result.get("action_type", "bypass")
         if action_type not in ["redact", "delete", "bypass"]:
+            print(f"  [i] INFO: LLM returned non-standard action '{action_type}', converting to 'redact'")
             action_type = "redact"
 
         content = result.get("content", obs['data_chunk'])
         if not isinstance(content, str) or not content.strip():
+            print(f"  [i] INFO: LLM returned empty/invalid content, using original")
             content = obs['data_chunk']
-            
+
         return {"action_type": action_type, "content": content}
     except Exception as e:
-        print(f"  [!] LLM Error: {e} → using enhanced fallback")
-        action = enhanced_agent_logic(obs)
-        action["is_fallback"] = True
-        return action
+        error_response = getattr(e, 'response', None)
+
+        if is_api_failure(e, error_response):
+            fallback_reason = "API_FAILURE"
+            print(f"  [*] FALLBACK[{fallback_reason}] {type(e).__name__}: {str(e)[:80]}")
+            action = enhanced_agent_logic(obs)
+            action["is_fallback"] = True
+            action["fallback_reason"] = fallback_reason
+            return action
+        else:
+            fallback_reason = "MODEL_OUTPUT_ERROR"
+            print(f"  [!] WARN[{fallback_reason}] LLM response malformed: {str(e)[:80]}")
+            raise
 
 # --- EVALUATION LOOP ---
 
@@ -292,13 +408,15 @@ if __name__ == "__main__":
     api_base = os.getenv("API_BASE_URL", "https://api.openai.com/v1") 
     model_name = os.getenv("MODEL_NAME", "gpt-4o")
 
+    rate_limiter = None
+
     if not api_key:
         print("\n[!] Skipping LLMAgent: Please set your OPENAI_API_KEY in the .env file")
     else:
         client = OpenAI(api_key=api_key, base_url=api_base)
         
         # Pass the client and model into the agent logic using a lambda
-        llm_wrapper = lambda obs: llm_agent_logic(obs, client, model_name)
+        llm_wrapper = lambda obs: llm_agent_logic(obs, client, model_name, rate_limiter)
         results["LLMAgent"] = evaluate_agent("LLMAgent", llm_wrapper, base_url)
 
     # 3. Print Final Hackathon Table
