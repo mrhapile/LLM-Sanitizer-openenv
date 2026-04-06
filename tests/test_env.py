@@ -32,6 +32,15 @@ def test_step_returns_valid_response(env):
     assert hasattr(reward, "score")
     assert isinstance(done, bool)
 
+
+def test_bypass_on_sensitive_chunk_is_heavily_penalized(env):
+    env.reset()
+
+    action = Action(action_type="bypass", content="")
+    _, reward, _, _ = env.step(action)
+
+    assert reward.score == -1.0
+
 # ---------------------------
 # TEST 3: REWARD CHANGES
 # ---------------------------

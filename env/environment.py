@@ -83,7 +83,8 @@ class VaultSanitizerEnv:
         score = self.grader.grade(
             original_text=original_text,
             agent_output=agent_output,
-            gold_entry=gold_entry
+            gold_entry=gold_entry,
+            action_type=action_type,
         )
 
         # Move to next data chunk

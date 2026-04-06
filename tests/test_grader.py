@@ -1,4 +1,4 @@
-from grader.grader import OVER_DELETION_MIN_RATIO, VaultGrader
+from grader.grader import BYPASS_INCORRECT_PENALTY, OVER_DELETION_MIN_RATIO, VaultGrader
 
 
 def _normalized_len(text):
@@ -62,3 +62,21 @@ def test_whitespace_padded_output_still_scores_zero():
 
     score = grader.grade(original_text, agent_output, gold)
     assert score == 0.0
+
+
+def test_bypass_correct_when_no_sensitive_data_returns_one():
+    grader = VaultGrader()
+    gold = grader.get_gold(0)
+    original_text = "General planning notes with no personal identifiers or secrets."
+
+    score = grader.grade(original_text, original_text, gold, action_type="bypass")
+    assert score == 1.0
+
+
+def test_bypass_incorrect_with_sensitive_data_gets_heavy_penalty():
+    grader = VaultGrader()
+    gold = grader.get_gold(0)
+    original_text = _sample_text(gold)
+
+    score = grader.grade(original_text, original_text, gold, action_type="bypass")
+    assert score == BYPASS_INCORRECT_PENALTY
