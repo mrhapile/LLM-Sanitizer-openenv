@@ -1,111 +1,107 @@
-import json
-from env.models import Observation, Action, Reward
-from grader.grader import VaultGrader
+from typing import Dict, Optional
+
+from env.models import Action, Observation, Reward
+from grader.grader import ReleaseDeskGrader
 
 
-SUPPORTED_ACTION_TYPES = {"redact", "delete", "bypass"}
+SUPPORTED_ACTION_TYPES = {"redact", "rewrite", "escalate", "bypass"}
 
 
-class VaultSanitizerEnv:
-    def __init__(self):
-        self.dataset = []
-        self.gold = []
+class ReleaseDeskEnv:
+    def __init__(self) -> None:
+        self.grader = ReleaseDeskGrader()
         self.current_index = 0
-        self.utility_budget = 10
-        self.max_steps = 210
         self.steps_taken = 0
-        self.grader = VaultGrader()
+        self.max_steps = self.grader.count()
+        self.remaining_escalations = 2
+        self.score_total = 0.0
 
-        self.load_data()
-
-    def load_data(self):
-        with open("data/dataset.jsonl") as f:
-            self.dataset = [json.loads(line) for line in f]
-
-        with open("data/gold_manifest.json") as f:
-            self.gold = json.load(f)
-
-    def reset(self):
+    def reset(self) -> Observation:
         self.current_index = 0
-        self.utility_budget = 10
         self.steps_taken = 0
-
+        self.remaining_escalations = 2
+        self.score_total = 0.0
         return self._get_observation()
 
-    def _get_observation(self):
-        data = self.dataset[self.current_index]["input"]
+    def _current_task(self) -> Dict:
+        return self.grader.get_task(self.current_index)
 
-        risk_report = []
-
-        if "@" in data:
-            risk_report.append("Possible email detected")
-        if "sk-" in data:
-            risk_report.append("Possible API key detected")
-
+    def _get_observation(self) -> Observation:
+        task = self._current_task()
         return Observation(
-            data_chunk=data,
-            risk_report=risk_report,
-            attempts_left=max(0, self.max_steps - self.steps_taken)
+            document_id=task["id"],
+            task_type=task["task_type"],
+            task_name=task["task_name"],
+            instruction=task["instruction"],
+            content_format=task["content_format"],
+            data_chunk=task["original_text"],
+            risk_report=task["risk_report"],
+            attempts_left=max(0, self.max_steps - self.steps_taken),
+            documents_remaining=self.max_steps - self.current_index,
         )
 
     def step(self, action: Action):
-        # Halt immediately if any terminal condition has already been reached.
-        if (
-            self.current_index >= len(self.dataset)
-            or self.utility_budget <= 0
-            or self.steps_taken >= self.max_steps
-        ):
-            return None, Reward(score=0.0), True, {}
+        if self.current_index >= self.max_steps:
+            return None, Reward(score=0.0, progress=0.0, leak_free_ratio=0.0, utility_ratio=0.0, format_ratio=0.0), True, {}
 
         action_type = getattr(action, "action_type", None)
         if action_type not in SUPPORTED_ACTION_TYPES:
-            return self._get_observation(), Reward(score=0.0), False, {
+            return self._get_observation(), Reward(score=0.0, progress=0.0, leak_free_ratio=0.0, utility_ratio=0.0, format_ratio=0.0), False, {
                 "error": "invalid_action_type",
                 "supported_actions": sorted(SUPPORTED_ACTION_TYPES),
             }
 
+        task = self._current_task()
+        content = getattr(action, "content", "") or ""
+
+        if action_type == "escalate":
+            if self.remaining_escalations <= 0:
+                graded = {
+                    "score": 0.0,
+                    "progress": 0.0,
+                    "leak_free_ratio": 0.0,
+                    "utility_ratio": 0.0,
+                    "format_ratio": 0.0,
+                    "failure_reasons": ["escalation_budget_exhausted"],
+                }
+            else:
+                self.remaining_escalations -= 1
+                graded = self.grader.grade(task, action_type, content)
+        else:
+            graded = self.grader.grade(task, action_type, content)
+
         self.steps_taken += 1
-
-        done = False
-
-        # Apply action logic (basic for now)
-        if action_type == "delete":
-            self.utility_budget -= 2
-        elif action_type == "bypass":
-            self.utility_budget -= 1
-
-        # Get gold truth for current sample
-        gold_entry = self.grader.get_gold(self.current_index)
-
-        original_text = self.dataset[self.current_index]["input"]
-        agent_output = getattr(action, "content", "") or ""
-
-        score = self.grader.grade(
-            original_text=original_text,
-            agent_output=agent_output,
-            gold_entry=gold_entry,
-            action_type=action_type,
-        )
-
-        # Move to next data chunk
         self.current_index += 1
+        self.score_total += graded["score"]
 
-        if self.current_index >= len(self.dataset):
-            done = True
+        done = self.current_index >= self.max_steps
+        observation: Optional[Observation] = None if done else self._get_observation()
+        reward = Reward(
+            score=graded["score"],
+            progress=graded["progress"],
+            leak_free_ratio=graded["leak_free_ratio"],
+            utility_ratio=graded["utility_ratio"],
+            format_ratio=graded["format_ratio"],
+        )
+        info = {
+            "document_id": task["id"],
+            "task_type": task["task_type"],
+            "failure_reasons": graded["failure_reasons"],
+            "remaining_escalations": self.remaining_escalations,
+            "average_score": self.score_total / self.steps_taken,
+        }
+        return observation, reward, done, info
 
-        if self.utility_budget <= 0:
-            done = True
+    def state(self) -> Dict:
+        current_task = None
+        if self.current_index < self.max_steps:
+            current_task = self._current_task()["id"]
 
-        if self.steps_taken >= self.max_steps:
-            done = True
-
-        obs = None if done else self._get_observation()
-
-        return obs, Reward(score=score), done, {}
-
-    def state(self):
         return {
             "current_index": self.current_index,
-            "utility_budget": self.utility_budget,
-            "steps_taken": self.steps_taken
+            "steps_taken": self.steps_taken,
+            "remaining_escalations": self.remaining_escalations,
+            "current_document_id": current_task,
+            "average_score": self.score_total / self.steps_taken if self.steps_taken else 0.0,
+            "total_documents": self.max_steps,
         }

@@ -1,31 +1,39 @@
-import string
+import re
+from collections import Counter
+from typing import Iterable, List
 
-ROLE_SYNONYMS = {
-    "ceo": ["chief executive officer", "boss"],
-    "cto": ["chief technology officer"],
-    "cfo": ["chief financial officer"],
-    "founder": ["co-founder", "creator"],
-    "manager": ["supervisor", "lead"]
-}
 
-def normalize_string(text: str) -> str:
-    """Lowercase, strip whitespace, remove punctuation."""
-    if not isinstance(text, str):
-        return ""
-    text = text.lower().strip()
-    return text.translate(str.maketrans('', '', string.punctuation))
+PLACEHOLDER = "[REDACTED]"
 
-def normalize_name(name: str) -> str:
-    """Normalize a name string."""
-    return normalize_string(name)
 
-def normalize_role(role: str) -> str:
-    """Normalize a role string and map to canonical synonym."""
-    norm_role = normalize_string(role)
-    
-    # Map synonyms to their canonical key
-    for canonical, synonyms in ROLE_SYNONYMS.items():
-        if norm_role == canonical or norm_role in synonyms:
-            return canonical
-            
-    return norm_role
+def normalize_whitespace(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def normalize_lines(text: str) -> List[str]:
+    return [line.rstrip() for line in (text or "").strip().splitlines()]
+
+
+def tokenize(text: str) -> List[str]:
+    return re.findall(r"[A-Za-z0-9_\-\[\]\.]+", (text or "").lower())
+
+
+def token_overlap_ratio(reference_text: str, candidate_text: str) -> float:
+    reference_tokens = Counter(tokenize(reference_text))
+    candidate_tokens = Counter(tokenize(candidate_text))
+    if not reference_tokens:
+        return 1.0
+
+    overlap = 0
+    for token, count in reference_tokens.items():
+        overlap += min(count, candidate_tokens.get(token, 0))
+    return overlap / sum(reference_tokens.values())
+
+
+def removal_ratio(text: str, forbidden_values: Iterable[str]) -> float:
+    values = [value for value in forbidden_values if value]
+    if not values:
+        return 1.0
+
+    removed = sum(1 for value in values if value not in (text or ""))
+    return removed / len(values)

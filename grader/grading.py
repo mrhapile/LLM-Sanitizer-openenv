@@ -1,55 +1,52 @@
-from grader.normalization import normalize_name, normalize_role
-from typing import List, Tuple, Dict, Any
+import json
+from typing import Any, Dict, Iterable, List
 
-def compute_score(predictions: List[Tuple[str, str]], ground_truth: List[Tuple[str, str]], strict_mode: bool = True) -> Dict[str, Any]:
-    """
-    Computes precision, recall, and F1 for entity-relation pairs.
-    """
-    gt_set = set()
-    for name, role in ground_truth:
-        gt_set.add((normalize_name(name), normalize_role(role)))
-        
-    pred_set = set()
-    for name, role in predictions:
-        pred_set.add((normalize_name(name), normalize_role(role)))
+from grader.normalization import normalize_lines
 
-    tp = 0
-    fp = 0
-    fn = 0
-    
-    logs = []
 
-    for pred_name, pred_role in pred_set:
-        if (pred_name, pred_role) in gt_set:
-            tp += 1
-            logs.append(f"✅ Exact Match: ('{pred_name}', '{pred_role}')")
-        else:
-            fp += 1
-            # Debugging logs: why did it fail?
-            partial_match = False
-            for gt_name, gt_role in gt_set:
-                if pred_name == gt_name:
-                    logs.append(f"❌ Role Mismatch: Name '{pred_name}' matched, but predicted role '{pred_role}' instead of '{gt_role}'")
-                    partial_match = True
-                    break
-            if not partial_match:
-                logs.append(f"❌ Spurious Entity: ('{pred_name}', '{pred_role}')")
+def parse_json_score(text: str, required_keys: Iterable[str]) -> float:
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return 0.0
 
-    for gt_name, gt_role in gt_set:
-        if (gt_name, gt_role) not in pred_set:
-            fn += 1
-            logs.append(f"❌ Missed Ground Truth: ('{gt_name}', '{gt_role}')")
+    if not isinstance(payload, dict):
+        return 0.0
 
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    keys = [key for key in required_keys if key]
+    if not keys:
+        return 1.0
 
-    return {
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "logs": logs
-    }
+    present = sum(1 for key in keys if key in payload)
+    return present / len(keys)
+
+
+def parse_kv_score(text: str, required_keys: Iterable[str]) -> float:
+    lines = normalize_lines(text)
+    if not lines:
+        return 0.0
+
+    seen = set()
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, _ = line.split(":", 1)
+        seen.add(key.strip())
+
+    keys = [key for key in required_keys if key]
+    if not keys:
+        return 1.0
+
+    present = sum(1 for key in keys if key in seen)
+    return present / len(keys)
+
+
+def structure_score(text: str, spec: Dict[str, Any]) -> float:
+    structure_type = spec.get("type", "text")
+    required_keys: List[str] = spec.get("required_keys", [])
+
+    if structure_type == "json":
+        return parse_json_score(text, required_keys)
+    if structure_type == "kv":
+        return parse_kv_score(text, required_keys)
+    return 1.0 if (text or "").strip() else 0.0

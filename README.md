@@ -1,156 +1,150 @@
-# 🛡️ Vault Sanitizer: AI Training Data Auditor
+# Release Desk OpenEnv
 
-> **An OpenEnv-compliant reinforcement learning environment evaluating how well AI agents can contextualize, sanitize, and de-identify realistic conversational data for Enterprise LLM compliance.**
+Release Desk is a deterministic OpenEnv environment for a real enterprise workflow: reviewing internal documents before they are released into an LLM training or retrieval pipeline. An agent must decide whether to pass a document through unchanged, redact literal secrets, or rewrite the document into a safe form while preserving business meaning.
 
----
+The environment is built around three task families:
 
-## 🎯 Project Overview
+1. `easy` - direct PII and secret removal from support tickets and email-like updates
+2. `medium` - structured repair for malformed JSON and key-value configuration dumps
+3. `hard` - contextual de-identification and prompt-injection cleanup for executive and incident memos
 
-**Vault Sanitizer** simulates a massive bottleneck in the modern AI pipeline: the role of the Data Compliance Engineer. Before massive dumps of enterprise data (like emails, Slack messages, or documentation) can be safely used to train internal LLMs, the data must be rigorously sanitized. 
+## Why this is a real task
 
-This environment challenges AI agents to read messy, Enron-inspired corporate data and eliminate high-risk exposures while safely maximizing training utility. The agent is forced to calculate the mathematical **Pareto Optimal** balance between:
-- **Safety First:** Stripping out core PII (Emails, Phones) alongside high-entropy Secrets (API Keys).
-- **Maximum Utility:** Avoiding lazy over-redaction (deleting entire paragraphs) that destroys the semantic structures needed for training.
+Security, compliance, data engineering, and AI platform teams already do this work manually before:
 
----
+- training internal copilots
+- indexing documents into RAG systems
+- exporting support and incident data to vendors
+- sharing redacted reports across teams
 
-## 🧠 Why This Submits a Winning Architecture
+Release Desk turns that workflow into a typed, deterministic evaluation environment for agent training.
 
-1. **Solves a Real AI Safety Problem:** Data sanitization is actively bottlenecking Enterprise AI adoption. This environment accurately benchmarks the safety behaviors of frontier reasoning models.
-2. **Deterministic Mathematical Grading:** Unlike subjective LLM-as-a-judge approaches, Vault Sanitizer employs strict heuristic constraints mapping against a hidden 100% accurate Gold Truth manifest. There is zero subjective evaluation!
-3. **Meaningful Reward Shaping:** The mathematical loss function forces AI agents to recognize over-indexing failures (e.g., blanket-deleting entire sequences just in case) via strict False Positive utility constraints.
-4. **Validates Agent Capability Trajectories:** Visually categorizes the exact capability gap separating weak rule-based parsing algorithms from deep contextual LLM reasoning pipelines.
-5. **Works Within Compute Constraints:** Built to operate frictionlessly upon the OpenEnv standard inside minimal CPU-bounded containers.
+## OpenEnv Interface
 
----
+The app exposes the standard OpenEnv API:
 
-## 🧩 Environment Details
+- `POST /reset` -> returns the first `Observation`
+- `POST /step` -> accepts an `Action`, returns `(observation, reward, done, info)`
+- `GET /state` -> returns current environment state
 
-The system strictly adheres to the OpenEnv standard using Pydantic validation via FastAPI over standard HTTP endpoints (`POST /reset`, `POST /step`, `GET /state`).
+Typed models live in [env/models.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/env/models.py).
 
-### 🔭 Observations
-At each `step()`, the agent views:
-- `data_chunk`: The raw, noisy text injection.
-- `risk_report`: An automated, low-fidelity metadata hint array showing potentially detected anomalies.
-- `attempts_left`: Internal budget ceiling to punish infinite hallucination looping.
+### Observation
 
-### 🕹️ Action Space
-The agent routes one of three primary directives:
-- **`redact`**: The primary interaction method. The agent returns a modified `content` string replacing targets with `[REDACTED]`.
-- **`delete`**: A brute-force action to wipe the chunk. Incurs massive utility penalties (False Positives).
-- **`bypass`**: Advances the chunk index without modification if the payload is safe.
+- `document_id`
+- `task_type`
+- `task_name`
+- `instruction`
+- `content_format`
+- `data_chunk`
+- `risk_report`
+- `attempts_left`
+- `documents_remaining`
 
-### 📈 Deterministic Reward Function
-```python
-Score = (TP * 1.0) - (FN * 1.0) - (FP * 0.5)
-```
-- **True Positives (TP):** Agent successfully removed targeted data footprints.
-- **False Negatives (FN):** Agent permitted sensitive constraints to leak into the output training data.
-- **False Positives (FP):** Agent over-redacted contiguous non-sensitive words, destroying dataset utility.
+### Action
 
-*Scores are aggressively normalized bounded tightly to `[0.0, 1.0]` per step.*
+- `redact`
+- `rewrite`
+- `escalate`
+- `bypass`
 
----
+`redact` is for literal replacement, `rewrite` is for structural repair or safe rephrasing, `escalate` spends limited review budget, and `bypass` is only correct for already-safe documents.
 
-## 🧗 Task Difficulty Trajectories
+### Reward
 
-The hidden Gold Manifest tests the agent sequentially against escalating complexities:
-- 🟢 **Easy (Standard PII):** Target and strip rigid signatures natively (Emails, Phone numbers).
-- 🟡 **Medium (System Secrets):** Locate embedded and hidden high entropy strings (ex: AWS API Keys `sk-...`).
-- 🔴 **Hard (Contextual De-Identification):** The true test of frontier reasoning. The agent must detect and break semantic links tying *Names* to corporate *Roles* (e.g., in the phrase *"Akash, the CFO"*, the agent must remove BOTH the name and the role to prevent identity extrapolation).
+- `score`
+- `progress`
+- `leak_free_ratio`
+- `utility_ratio`
+- `format_ratio`
 
-### ⚖️ Evaluating Joint Predictions (Name + Role)
-To mathematically prevent "shortcut" configurations (like Regex traps blindly purging all capitalized words) we employ **Explicit Joint Entity Mapping** through deterministic normalizations.
+All reward components are bounded in `[0.0, 1.0]`.
 
-#### Why "Name-Only" Matching is Insufficient:
-An agent detecting "Elon Musk" but ignoring "Chief Executive Officer" fails the fundamental dataset sanitization objective; the individual's identity is highly susceptible to extrapolation!
+## Task Design
 
-We grade outputs mathematically on the absolute tuple pair: `(Name, Role)`:
-- 🟢 **✅ Correct (True Positive):** Predicted `("Elon Musk", "CEO")` precisely maps onto the Ground Truth `("Elon Musk", "CEO")`. *(Normalization safely catches trailing punctuation and handles synonym mapping! e.g., "chief executive officer" ≈ "ceo")*
-- 🔴 **❌ Wrong Role (False Positive):** Predicted `("Elon Musk", "Founder")`. The agent missed the actual relational link inside the text. Triggers a False Positive penalty for hallucinating and a False Negative penalty for missing the legitimate role.
-- 🔴 **❌ Missing Identity (False Negative):** Predicted `("Unknown", "CEO")`. The name was lost.
-- 🔴 **❌ Unlinked Identity (False Negative):** Predicted `("Elon Musk", "")`. The agent purged the name but leaked the associated relational role entirely.
+### Easy: Customer Support Cleanup
 
-This Joint Matching effectively shatters all "Weak Agent" regex paradigms, mathematically forcing the model to display robust relational contextual reasoning.
+The agent removes direct emails, phone numbers, and tokens while preserving ticket context. There is also a safe bypass case so the policy does not collapse into "always redact".
 
----
+### Medium: Structured Config Repair
 
-## 📊 Baseline Agent Performance
+The agent repairs malformed JSON or key-value config blobs, keeps the original keys, and replaces sensitive values with `[REDACTED]`.
 
-To validate the environment's analytical accuracy, we implemented three internal baseline agents mapped to `inference.py`.
+### Hard: Contextual De-identification
 
-| Agent Level | Methodology | Score Matrix |
-| :--- | :--- | :--- |
-| **RandomAgent** | Emits stochastic actions mapping pure chaos. Sets the absolute zero bound. | `Score: 0.00` |
-| **RegexAgent** | Standard rule-based parsing. Clears the Easy tasks but mechanically collapses upon Hard relations. | `Score: ~0.11` |
-| **LLMAgent** | The Frontier persona. Actively maps Contextual De-Identification. *(Below showcases the API Fallback constraint limit).* | `Score: ~0.17 (fallback)` |
+The agent must strip executive identity clues, prompt-injection text, secrets, and contact details while keeping the business-safe summary intact.
 
-> **Robust Architecture Note (Smart Fallback):** The `LLMAgent` inherently implements a highly resilient fallback mechanism route. Should the target OpenAI API fail (due to `429 Quota Limits` or `404 Outages`), execution effortlessly detours to an `enhanced_agent_logic` ruleset. This guarantees stable evaluation matrices ensuring the agent never defaults to a `0.00` bypass collapse during live demonstrations! *(Expected LLM live-inference bound is ~0.70 - 0.90).*
+## Grading
 
----
+The grader is deterministic and task-aware:
 
-## 🛠️ Setup & Local Installation
+- `leak_free_ratio`: how many forbidden values are fully removed
+- `utility_ratio`: how much of the expected safe content is preserved
+- `format_ratio`: whether JSON or key-value structure is valid
+- `required_phrase_ratio`: whether critical safe context is retained on medium and hard tasks
 
-### 1. Initialize the Environment
+The final score weights these components differently by difficulty. The runtime grader lives in [grader/grader.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/grader/grader.py).
+
+## Local Setup
+
 ```bash
-git clone https://github.com/mrhapile/LLM-Sanitizer-openenv.git
-cd LLM-Sanitizer-openenv
-
-# Setup Virtual Environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install Dependencies and NLP packages
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python -m spacy download en_core_web_sm
 ```
 
-### 2. Configure Credentials
-Duplicate `.env_example` (if present) or simply create a `.env` in the root and export your target configurations to enable live baseline inference:
-```env
-OPENAI_API_KEY=your_api_key_here
-API_BASE_URL=https://api.openai.com/v1
-MODEL_NAME=gpt-4o
-HF_TOKEN=your_huggingface_token
-```
+Run the API:
 
-### 3. Run the Evaluation Simulation
-Start the native engine via terminal 1 (or allow Docker inference):
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 7860 &
+uvicorn main:app --host 0.0.0.0 --port 7860
 ```
-Execute the integrated Agent Evaluator suite:
+
+Run the baseline benchmark:
+
 ```bash
 python inference.py
 ```
 
----
+Optional LLM baseline:
 
-## 🧪 Validation & Testing
-
-The environment ships with integrated `pytest` continuity matrices confirming complete data-determinism. Validation achieves 100% clearance (6/6 tests passing) covering endpoints, mathematical bounds, varying datasets, and OpenEnv action validations. 
-
-Run the testing module locally:
 ```bash
-export PYTHONPATH=.
-pytest tests/
+export OPENAI_API_KEY=...
+export MODEL_NAME=gpt-4o-mini
+python inference.py
 ```
 
----
+## Tests
 
-## 🐳 Docker Containerization
-
-Built to natively boot into remote execution pipelines seamlessly targeting port `7860`.
 ```bash
-# Build the image safely
-docker build -t vault-sanitizer .
-
-# Execute the local instance
-docker run -p 7860:7860 vault-sanitizer
+pytest -q
 ```
 
-## 🚀 Hugging Face Space Deployment
+The tests cover:
 
-Vault Sanitizer is pre-optimized for `OpenEnv` registry evaluation constraints! When deploying to a Hugging Face Space:
-1. Ensure the Space connects the exposed Docker port directly to the interface.
-2. The environment native root (`/`) pings the status interface, and the environment successfully receives initialization structures immediately upon pinging the native `POST /reset` endpoint!
+- model validation
+- environment state transitions
+- escalation budget enforcement
+- deterministic grader behavior
+- structured parsing helpers
+
+## Docker
+
+Build and run locally:
+
+```bash
+docker build -t release-desk-openenv .
+docker run -p 7860:7860 release-desk-openenv
+```
+
+## Hugging Face Spaces
+
+This repo is container-ready for a Docker Space. Use the Dockerfile in the repo root, expose port `7860`, and tag the Space with `openenv`.
+
+## Repo Layout
+
+- [main.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/main.py) - FastAPI OpenEnv entrypoint
+- [env/environment.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/env/environment.py) - environment state machine
+- [env/models.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/env/models.py) - typed OpenEnv models
+- [grader/grader.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/grader/grader.py) - deterministic task grader
+- [data/tasks.json](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/data/tasks.json) - deterministic task corpus
+- [inference.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/inference.py) - reproducible baselines

@@ -1,109 +1,91 @@
 import json
+from typing import Any, Dict, List
+
+from grader.grading import structure_score
+from grader.normalization import PLACEHOLDER, removal_ratio, token_overlap_ratio
 
 
-OVER_DELETION_MIN_RATIO = 0.3
-BYPASS_INCORRECT_PENALTY = -1.0
+ESCALATION_SCORE = 0.35
 
 
-def _normalized_len(text):
-    # Treat repeated/leading/trailing whitespace as non-meaningful content.
-    return len(" ".join((text or "").split()))
+class ReleaseDeskGrader:
+    def __init__(self, manifest_path: str = "data/tasks.json"):
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            self.tasks: List[Dict[str, Any]] = json.load(handle)
 
+    def get_task(self, idx: int) -> Dict[str, Any]:
+        return self.tasks[idx]
 
-def _has_sensitive_targets(original_text, gold_entry):
-    sensitive_items = [
-        gold_entry["email"],
-        gold_entry["api_key"],
-        gold_entry["phone"],
-    ]
+    def count(self) -> int:
+        return len(self.tasks)
 
-    if any(item and item in original_text for item in sensitive_items):
-        return True
+    def grade(self, task: Dict[str, Any], action_type: str, content: str) -> Dict[str, Any]:
+        original_text = task["original_text"]
+        expected_output = task["expected_output"]
+        forbidden_values = task.get("forbidden_values", [])
+        required_phrases = task.get("required_phrases", [])
+        structure = task.get("structure", {"type": "text"})
 
-    # Name-role linkage is considered sensitive only when both appear together.
-    name = gold_entry["name"]
-    role = gold_entry["role"]
-    if name in original_text and role in original_text:
-        return True
-
-    return False
-
-class VaultGrader:
-    def __init__(self):
-        with open("data/gold_manifest.json") as f:
-            self.gold = json.load(f)
-
-    def get_gold(self, idx):
-        return self.gold[idx]
-
-    def grade(self, original_text, agent_output, gold_entry, action_type="redact"):
         if action_type == "bypass":
-            return 1.0 if not _has_sensitive_targets(original_text, gold_entry) else BYPASS_INCORRECT_PENALTY
+            score = 1.0 if not forbidden_values and content == original_text else 0.0
+            return {
+                "score": score,
+                "progress": score,
+                "leak_free_ratio": score,
+                "utility_ratio": 1.0 if content == original_text else 0.0,
+                "format_ratio": 1.0 if content == original_text else 0.0,
+                "failure_reasons": [] if score else ["unsafe_bypass"],
+            }
 
-        # Prevent reward exploitation via aggressive deletion of useful context.
-        if original_text and _normalized_len(agent_output) < OVER_DELETION_MIN_RATIO * _normalized_len(original_text):
-            return 0.0
+        if action_type == "escalate":
+            reasons = ["escalated_for_review"]
+            return {
+                "score": ESCALATION_SCORE,
+                "progress": ESCALATION_SCORE,
+                "leak_free_ratio": 0.0,
+                "utility_ratio": 0.0,
+                "format_ratio": 0.0,
+                "failure_reasons": reasons,
+            }
 
-        TP = 0
-        FN = 0
-        FP = 0
+        leak_free_ratio = removal_ratio(content, forbidden_values)
+        utility_ratio = token_overlap_ratio(expected_output, content)
+        format_ratio = structure_score(content, structure)
+        required_phrase_ratio = 1.0
+        if required_phrases:
+            required_phrase_ratio = sum(1 for phrase in required_phrases if phrase in content) / len(required_phrases)
 
-        # -------------------------
-        # 1. Sensitive values
-        # -------------------------
-        sensitive_items = [
-            gold_entry["email"],
-            gold_entry["api_key"],
-            gold_entry["phone"]
-        ]
+        weights = {
+            "easy": (0.7, 0.2, 0.1, 0.0),
+            "medium": (0.45, 0.2, 0.3, 0.05),
+            "hard": (0.45, 0.25, 0.15, 0.15),
+        }[task["task_type"]]
 
-        # -------------------------
-        # 2. Check removal
-        # -------------------------
-        for item in sensitive_items:
-            if item in original_text:
-                if item not in agent_output:
-                    TP += 1   # correctly removed
-                else:
-                    FN += 1   # missed
+        score = (
+            leak_free_ratio * weights[0]
+            + utility_ratio * weights[1]
+            + format_ratio * weights[2]
+            + required_phrase_ratio * weights[3]
+        )
+        score = round(max(0.0, min(1.0, score)), 6)
 
-        # -------------------------
-        # 3. Entity relation (HARD TASK)
-        # -------------------------
-        name = gold_entry["name"]
-        role = gold_entry["role"]
+        failure_reasons: List[str] = []
+        if leak_free_ratio < 1.0:
+            failure_reasons.append("missed_sensitive_content")
+        if utility_ratio < 0.75:
+            failure_reasons.append("utility_loss")
+        if format_ratio < 1.0 and structure.get("type") != "text":
+            failure_reasons.append("invalid_structure")
+        if required_phrase_ratio < 1.0:
+            failure_reasons.append("context_loss")
+        if PLACEHOLDER not in content and forbidden_values:
+            failure_reasons.append("missing_redaction_marker")
 
-        if name in original_text and role in original_text:
-            if name not in agent_output and role not in agent_output:
-                TP += 1
-            else:
-                FN += 1
-
-        # -------------------------
-        # 4. Over-redaction check
-        # -------------------------
-        original_words = set(original_text.split())
-        output_words = set(agent_output.split())
-
-        removed_words = original_words - output_words
-
-        allowed_removals = sensitive_items + [name, role]
-        for word in removed_words:
-            # Ignore punctuation-attached words if they contain allowed secrets
-            if not any(allowed in word for allowed in allowed_removals if allowed):
-                FP += 1
-
-        # -------------------------
-        # 5. Final score
-        # -------------------------
-        max_possible = sum(1 for item in sensitive_items if item in original_text)
-        if name in original_text and role in original_text:
-            max_possible += 1
-            
-        max_possible = max_possible or 1 # safety override
-        raw_score = (TP * 1.0) - (FN * 1.0) - (FP * 0.5)
-
-        score = raw_score / max_possible
-        score = max(0.0, min(1.0, score))
-
-        return score
+        return {
+            "score": score,
+            "progress": leak_free_ratio,
+            "leak_free_ratio": leak_free_ratio,
+            "utility_ratio": utility_ratio,
+            "format_ratio": format_ratio,
+            "failure_reasons": failure_reasons,
+        }

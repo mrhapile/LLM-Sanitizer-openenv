@@ -1,82 +1,42 @@
-from grader.grader import BYPASS_INCORRECT_PENALTY, OVER_DELETION_MIN_RATIO, VaultGrader
+from grader.grader import ESCALATION_SCORE, ReleaseDeskGrader
 
 
-def _normalized_len(text):
-    return len(" ".join((text or "").split()))
+def test_easy_task_scores_full_credit_for_expected_output():
+    grader = ReleaseDeskGrader()
+    task = grader.get_task(0)
+    result = grader.grade(task, "redact", task["expected_output"])
+
+    assert result["score"] == 1.0
+    assert result["leak_free_ratio"] == 1.0
+    assert result["utility_ratio"] == 1.0
 
 
-def _sample_text(gold_entry):
-    return (
-        f"Employee note for {gold_entry['name']} ({gold_entry['role']}). "
-        f"Reach at {gold_entry['email']} and {gold_entry['phone']}. "
-        f"Key: {gold_entry['api_key']}. "
-        "Project details and non-sensitive operational context must be preserved."
-    )
+def test_bypass_requires_safe_document():
+    grader = ReleaseDeskGrader()
+    unsafe_task = grader.get_task(0)
+    safe_task = grader.get_task(1)
+
+    unsafe_result = grader.grade(unsafe_task, "bypass", unsafe_task["original_text"])
+    safe_result = grader.grade(safe_task, "bypass", safe_task["original_text"])
+
+    assert unsafe_result["score"] == 0.0
+    assert safe_result["score"] == 1.0
 
 
-def test_over_deletion_returns_zero_score():
-    grader = VaultGrader()
-    gold = grader.get_gold(0)
-    original_text = (
-        f"{gold['name']} {gold['role']} {gold['email']} {gold['phone']} {gold['api_key']} "
-        + ("safe " * 400)
-    )
+def test_escalation_returns_partial_credit():
+    grader = ReleaseDeskGrader()
+    task = grader.get_task(4)
+    result = grader.grade(task, "escalate", "")
 
-    # This keeps one repeated non-sensitive token, so pre-guard scoring would be high.
-    agent_output = "safe " * 20
-
-    assert _normalized_len(agent_output) < OVER_DELETION_MIN_RATIO * _normalized_len(original_text)
-
-    score = grader.grade(original_text, agent_output, gold)
-    assert score == 0.0
+    assert result["score"] == ESCALATION_SCORE
+    assert "escalated_for_review" in result["failure_reasons"]
 
 
-def test_partial_redaction_above_threshold_is_allowed():
-    grader = VaultGrader()
-    gold = grader.get_gold(0)
-    original_text = _sample_text(gold)
+def test_missing_redactions_penalize_score():
+    grader = ReleaseDeskGrader()
+    task = grader.get_task(4)
+    partial = task["original_text"].replace("9175550188", "[REDACTED]")
+    result = grader.grade(task, "rewrite", partial)
 
-    agent_output = (
-        original_text
-        .replace(gold["email"], "[REDACTED]")
-        .replace(gold["phone"], "[REDACTED]")
-        .replace(gold["api_key"], "[REDACTED]")
-    )
-
-    # Keep most utility; should not be auto-zeroed by length guard.
-    assert _normalized_len(agent_output) >= OVER_DELETION_MIN_RATIO * _normalized_len(original_text)
-    score = grader.grade(original_text, agent_output, gold)
-    assert score > 0.0
-
-
-def test_whitespace_padded_output_still_scores_zero():
-    grader = VaultGrader()
-    gold = grader.get_gold(0)
-    original_text = _sample_text(gold) + (" safe" * 200)
-
-    # Length is padded mostly by whitespace; meaningful content is still tiny.
-    agent_output = (" " * 1200) + "safe" + (" " * 1200)
-
-    assert len(agent_output) > OVER_DELETION_MIN_RATIO * len(original_text)
-    assert _normalized_len(agent_output) < OVER_DELETION_MIN_RATIO * _normalized_len(original_text)
-
-    score = grader.grade(original_text, agent_output, gold)
-    assert score == 0.0
-
-
-def test_bypass_correct_when_no_sensitive_data_returns_one():
-    grader = VaultGrader()
-    gold = grader.get_gold(0)
-    original_text = "General planning notes with no personal identifiers or secrets."
-
-    score = grader.grade(original_text, original_text, gold, action_type="bypass")
-    assert score == 1.0
-
-
-def test_bypass_incorrect_with_sensitive_data_gets_heavy_penalty():
-    grader = VaultGrader()
-    gold = grader.get_gold(0)
-    original_text = _sample_text(gold)
-
-    score = grader.grade(original_text, original_text, gold, action_type="bypass")
-    assert score == BYPASS_INCORRECT_PENALTY
+    assert result["score"] < 0.7
+    assert "missed_sensitive_content" in result["failure_reasons"]

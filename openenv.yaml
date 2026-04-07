@@ -1,17 +1,25 @@
-name: vault_sanitizer
-description: AI training data sanitizer environment
-
+name: release_desk
+description: Deterministic OpenEnv environment for sanitizing enterprise release artifacts before LLM training or retrieval.
+hf_space_tags:
+  - openenv
+  - ai-safety
+  - enterprise-data
 actions:
   - redact
-  - delete
+  - rewrite
+  - escalate
   - bypass
-
 observations:
+  - document_id
+  - task_type
+  - task_name
+  - instruction
+  - content_format
   - data_chunk
   - risk_report
   - attempts_left
-
+  - documents_remaining
 tasks:
-  - pii_scrubbing
-  - secret_detection
+  - customer_support_cleanup
+  - structured_config_repair
   - contextual_deidentification

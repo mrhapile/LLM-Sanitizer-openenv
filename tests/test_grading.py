@@ -1,76 +1,21 @@
-import pytest
-from grader.grading import compute_score
+from grader.grading import parse_json_score, parse_kv_score, structure_score
 
-def test_perfect_match():
-    gt = [("Elon Musk", "CEO")]
-    pred = [("Elon Musk", "CEO")]
-    res = compute_score(pred, gt)
-    
-    assert res["tp"] == 1
-    assert res["fp"] == 0
-    assert res["fn"] == 0
-    assert res["precision"] == 1.0
-    assert res["recall"] == 1.0
 
-def test_normalization_and_synonyms():
-    gt = [("Elon Musk", "ceo")]
-    pred = [(" Elon Musk! ", " Chief Executive Officer")]
-    res = compute_score(pred, gt)
-    
-    # "Chief Executive Officer" → "chief executive officer" → synonyms["ceo"]
-    assert res["tp"] == 1
-    assert res["f1"] == 1.0
+def test_parse_json_score_requires_expected_keys():
+    text = '{"service":"payments","owner_email":"[REDACTED]","on_call":"[REDACTED]","api_key":"[REDACTED]","status":"rotate"}'
+    assert parse_json_score(text, ["service", "owner_email", "on_call", "api_key", "status"]) == 1.0
 
-def test_wrong_role_triggers_hard_constraint():
-    gt = [("Elon Musk", "CEO")]
-    pred = [("Elon Musk", "Founder")]  # Correct name, wrong role
-    
-    res = compute_score(pred, gt)
-    
-    assert res["tp"] == 0
-    assert res["fp"] == 1  # Spurious entity (predicted wrong pair)
-    assert res["fn"] == 1  # Missed the correct pair
-    assert res["precision"] == 0.0
 
-def test_missing_role():
-    gt = [("Elon Musk", "CEO")]
-    pred = [("Elon Musk", "")] 
-    
-    res = compute_score(pred, gt)
-    assert res["tp"] == 0
-    assert res["fp"] == 1 
+def test_parse_json_score_returns_zero_for_invalid_json():
+    assert parse_json_score('{"service":"payments",}', ["service"]) == 0.0
 
-def test_swapped_roles_adversarial():
-    gt = [("Alice", "CEO"), ("Bob", "CTO")]
-    pred = [("Alice", "CTO"), ("Bob", "CEO")]
-    
-    res = compute_score(pred, gt)
-    
-    assert res["tp"] == 0
-    assert res["fp"] == 2
-    assert res["fn"] == 2
-    assert res["f1"] == 0.0
 
-def test_generic_roles_rejected():
-    gt = [("Alice", "Manager")]
-    pred = [("Alice", "person")]  # Generic fallback
-    
-    res = compute_score(pred, gt)
-    
-    assert res["tp"] == 0
-    assert res["fp"] == 1
-    assert res["fn"] == 1
+def test_parse_kv_score_tracks_required_keys():
+    text = "service: analytics\npager: [REDACTED]\nnotes: rotate"
+    assert parse_kv_score(text, ["service", "pager", "notes"]) == 1.0
+    assert parse_kv_score(text, ["service", "pager", "backup_email"]) < 1.0
 
-def test_multiple_entities_with_extras():
-    gt = [("Alice", "CEO"), ("Bob", "CTO")]
-    pred = [("Alice", "CEO"), ("Charlie", "CFO")] 
-    
-    res = compute_score(pred, gt)
-    
-    assert res["tp"] == 1  # Alice matches
-    assert res["fp"] == 1  # Charlie is extra
-    assert res["fn"] == 1  # Bob is missed
-    
-    assert res["precision"] == 0.5   # 1 / (1 + 1)
-    assert res["recall"] == 0.5      # 1 / (1 + 1)
-    assert res["f1"] == 0.5
+
+def test_structure_score_falls_back_to_text_presence():
+    assert structure_score("safe text", {"type": "text", "required_keys": []}) == 1.0
+    assert structure_score("", {"type": "text", "required_keys": []}) == 0.0
