@@ -1,142 +1,433 @@
+import html
 import json
 import os
 import webbrowser
-from html import escape
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import requests
 
+from inference import random_agent_logic, rules_agent_logic
 
-def generate_html_report(observation, action_payload, reward_payload, output_path):
-    raw = escape(observation["data_chunk"])
-    cleaned = escape(action_payload["content"])
-    risk_items = "".join(f"<li>{escape(item)}</li>" for item in observation["risk_report"])
-    failures = "".join(f"<li>{escape(item)}</li>" for item in reward_payload["info"]["failure_reasons"])
 
-    html = f"""<!DOCTYPE html>
+SHOWCASE_TASKS = {"easy", "medium", "hard"}
+
+
+def run_episode(base_url: str, agent_name: str, agent_func) -> Tuple[List[Dict], Dict[str, float], Dict[str, int]]:
+    response = requests.post(f"{base_url}/reset", timeout=30)
+    response.raise_for_status()
+    observation = response.json()["observation"]
+
+    episodes: List[Dict] = []
+    failure_counts: Dict[str, int] = {}
+    totals = {"easy": [], "medium": [], "hard": []}
+
+    while True:
+        action = agent_func(observation)
+        step = requests.post(f"{base_url}/step", json=action, timeout=30)
+        step.raise_for_status()
+        payload = step.json()
+
+        record = {
+            "agent_name": agent_name,
+            "observation": observation,
+            "action": action,
+            "reward": payload["reward"],
+            "info": payload["info"],
+        }
+        episodes.append(record)
+        totals[payload["info"]["task_type"]].append(payload["reward"]["score"])
+        for failure in payload["info"]["failure_reasons"]:
+            failure_counts[failure] = failure_counts.get(failure, 0) + 1
+
+        if payload["done"]:
+            break
+        observation = payload["observation"]
+
+    averages = {
+        task_type: round(sum(scores) / len(scores), 3) if scores else 0.0
+        for task_type, scores in totals.items()
+    }
+    averages["overall"] = round(sum(sum(scores) for scores in totals.values()) / sum(len(scores) for scores in totals.values()), 3)
+    return episodes, averages, dict(sorted(failure_counts.items()))
+
+
+def build_case_lookup(records: List[Dict]) -> Dict[str, Dict]:
+    lookup = {}
+    for record in records:
+        task_type = record["observation"]["task_type"]
+        if task_type not in lookup:
+            lookup[task_type] = record
+    return lookup
+
+
+def render_failures(failure_counts: Dict[str, int]) -> str:
+    if not failure_counts:
+        return "<li>None</li>"
+    return "".join(f"<li><strong>{html.escape(name)}</strong>: {count}</li>" for name, count in failure_counts.items())
+
+
+def render_case(agent_name: str, record: Dict) -> str:
+    observation = record["observation"]
+    action = record["action"]
+    reward = record["reward"]
+    info = record["info"]
+
+    risk_items = "".join(f"<li>{html.escape(item)}</li>" for item in observation["risk_report"])
+    adversarial_items = "".join(f"<li>{html.escape(item)}</li>" for item in observation["adversarial_signals"]) or "<li>None</li>"
+    failure_items = "".join(f"<li>{html.escape(item)}</li>" for item in info["failure_reasons"]) or "<li>None</li>"
+    sensitive_items = "".join(f"<li>{html.escape(item)}</li>" for item in info["detected_sensitive_types"]) or "<li>None</li>"
+
+    return f"""
+    <section class="case-card">
+      <div class="case-meta">
+        <span class="pill pill-{html.escape(observation['task_type'])}">{html.escape(observation['task_type'])}</span>
+        <span class="pill pill-agent">{html.escape(agent_name)}</span>
+        <span class="pill pill-action">{html.escape(action['action_type'])}</span>
+      </div>
+      <h3>{html.escape(observation['task_name'])}</h3>
+      <p class="instruction">{html.escape(observation['instruction'])}</p>
+      <div class="metrics">
+        <div><span>Score</span><strong>{reward['score']:.3f}</strong></div>
+        <div><span>Leak</span><strong>{reward['leak_free_ratio']:.3f}</strong></div>
+        <div><span>Policy</span><strong>{reward['policy_ratio']:.3f}</strong></div>
+        <div><span>Adversarial</span><strong>{reward['adversarial_ratio']:.3f}</strong></div>
+      </div>
+      <div class="pane-grid">
+        <div class="pane">
+          <h4>Before</h4>
+          <pre>{html.escape(observation['data_chunk'])}</pre>
+        </div>
+        <div class="pane">
+          <h4>After</h4>
+          <pre>{html.escape(action['content'])}</pre>
+        </div>
+      </div>
+      <div class="list-grid">
+        <div>
+          <h4>Risk Report</h4>
+          <ul>{risk_items}</ul>
+        </div>
+        <div>
+          <h4>Adversarial Signals</h4>
+          <ul>{adversarial_items}</ul>
+        </div>
+        <div>
+          <h4>Detected Types</h4>
+          <ul>{sensitive_items}</ul>
+        </div>
+        <div>
+          <h4>Failure Reasons</h4>
+          <ul>{failure_items}</ul>
+        </div>
+      </div>
+    </section>
+    """
+
+
+def generate_html_report(output_path: Path, rules_records: List[Dict], random_records: List[Dict], rules_summary: Dict[str, float], random_summary: Dict[str, float], rules_failures: Dict[str, int], random_failures: Dict[str, int]) -> None:
+    rules_cases = build_case_lookup(rules_records)
+    random_cases = build_case_lookup(random_records)
+
+    showcase_sections = []
+    for task_type in ["easy", "medium", "hard"]:
+        showcase_sections.append(
+            f"""
+            <section class="showcase-block">
+              <header>
+                <h2>{task_type.title()} Task Showcase</h2>
+                <p>Naive output versus task-aware sanitization on the same document class.</p>
+              </header>
+              <div class="showcase-grid">
+                {render_case('RandomAgent', random_cases[task_type])}
+                {render_case('RulesAgent', rules_cases[task_type])}
+              </div>
+            </section>
+            """
+        )
+
+    html_body = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Release Desk Demo</title>
+  <title>Release Desk Demo Report</title>
   <style>
     :root {{
-      --bg: #f4efe6;
-      --panel: #fffaf2;
-      --ink: #1f1a17;
-      --accent: #a64b2a;
-      --muted: #6d6258;
-      --line: #ddcfbe;
+      --paper: #f4efe4;
+      --panel: rgba(255, 251, 245, 0.88);
+      --panel-strong: #fffdf8;
+      --ink: #1c1917;
+      --muted: #655b53;
+      --line: rgba(104, 81, 61, 0.18);
+      --easy: #3b7a57;
+      --medium: #c2741f;
+      --hard: #9c2f2f;
+      --agent: #335c81;
+      --action: #735751;
     }}
+    * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       font-family: Georgia, "Times New Roman", serif;
-      background: radial-gradient(circle at top, #fff8eb 0%, var(--bg) 60%);
       color: var(--ink);
-      padding: 32px;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(219, 186, 145, 0.22), transparent 35%),
+        radial-gradient(circle at 100% 20%, rgba(130, 165, 143, 0.18), transparent 30%),
+        linear-gradient(180deg, #faf5eb 0%, var(--paper) 52%, #ede4d7 100%);
+      min-height: 100vh;
     }}
     .wrap {{
-      max-width: 1100px;
+      width: min(1280px, calc(100vw - 32px));
       margin: 0 auto;
+      padding: 32px 0 60px;
       display: grid;
-      gap: 24px;
+      gap: 28px;
     }}
-    .hero, .grid > section {{
+    .hero, .summary-grid > section, .showcase-block {{
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 24px;
-      box-shadow: 0 12px 30px rgba(61, 43, 28, 0.08);
+      border-radius: 26px;
+      box-shadow: 0 16px 50px rgba(63, 47, 34, 0.08);
+      backdrop-filter: blur(12px);
     }}
-    .grid {{
+    .hero {{
+      overflow: hidden;
+      position: relative;
+      padding: 34px;
+    }}
+    .hero::after {{
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(125deg, rgba(166, 75, 42, 0.12), transparent 38%),
+        linear-gradient(310deg, rgba(59, 122, 87, 0.10), transparent 32%);
+      pointer-events: none;
+    }}
+    .hero h1 {{
+      margin: 0 0 8px;
+      font-size: clamp(2rem, 4vw, 3.6rem);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }}
+    .hero p {{
+      max-width: 740px;
+      color: var(--muted);
+      font-size: 1.05rem;
+      margin: 0;
+    }}
+    .summary-grid {{
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 24px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+    }}
+    .summary-grid > section {{
+      padding: 22px;
+    }}
+    .summary-grid h2 {{
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+    }}
+    .summary-list {{
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .summary-list li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: var(--panel-strong);
+      border: 1px solid rgba(104, 81, 61, 0.1);
+      font-size: 0.96rem;
+    }}
+    .showcase-block {{
+      padding: 24px;
+      display: grid;
+      gap: 20px;
+    }}
+    .showcase-block header p {{
+      margin: 6px 0 0;
+      color: var(--muted);
+    }}
+    .showcase-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 18px;
+    }}
+    .case-card {{
+      background: var(--panel-strong);
+      border: 1px solid rgba(104, 81, 61, 0.12);
+      border-radius: 22px;
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }}
+    .case-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 11px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: white;
+    }}
+    .pill-easy {{ background: var(--easy); }}
+    .pill-medium {{ background: var(--medium); }}
+    .pill-hard {{ background: var(--hard); }}
+    .pill-agent {{ background: var(--agent); }}
+    .pill-action {{ background: var(--action); }}
+    .instruction {{
+      margin: 0;
+      color: var(--muted);
+    }}
+    .metrics {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .metrics div {{
+      padding: 12px;
+      border-radius: 16px;
+      background: #fff;
+      border: 1px solid rgba(104, 81, 61, 0.12);
+    }}
+    .metrics span {{
+      display: block;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 5px;
+    }}
+    .metrics strong {{
+      font-size: 1.25rem;
+    }}
+    .pane-grid, .list-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }}
+    .pane, .list-grid > div {{
+      background: #fff;
+      border: 1px solid rgba(104, 81, 61, 0.12);
+      border-radius: 16px;
+      padding: 14px;
+    }}
+    h2, h3, h4 {{
+      margin: 0;
+    }}
+    h3 {{
+      font-size: 1.25rem;
+    }}
+    h4 {{
+      margin-bottom: 10px;
+      font-size: 0.92rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
     }}
     pre {{
+      margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
+      font-size: 0.83rem;
+      line-height: 1.55;
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.5;
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 16px;
-    }}
-    .badge {{
-      display: inline-block;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: #f1d7c9;
-      color: var(--accent);
-      margin-right: 8px;
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
     }}
     ul {{
+      margin: 0;
       padding-left: 18px;
+      display: grid;
+      gap: 7px;
+    }}
+    @media (max-width: 720px) {{
+      .wrap {{
+        width: min(100vw - 18px, 1280px);
+        padding: 12px 0 28px;
+      }}
+      .hero {{
+        padding: 24px;
+      }}
+      .metrics {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
     }}
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <main class="wrap">
     <section class="hero">
-      <div class="badge">{escape(observation["task_type"])}</div>
-      <div class="badge">{escape(observation["task_name"])}</div>
-      <h1>AI Data Release Desk Demo</h1>
-      <p>{escape(observation["instruction"])}</p>
-      <p>Score: <strong>{reward_payload["reward"]["score"]:.3f}</strong></p>
+      <h1>Release Desk Demo Report</h1>
+      <p>Judge-facing before/after showcase for enterprise data release review. Each section compares naive behavior with the task-aware baseline across easy, medium, and hard cases, including adversarial prompt injection and obfuscated secret removal.</p>
     </section>
-    <div class="grid">
+
+    <section class="summary-grid">
       <section>
-        <h2>Original Document</h2>
-        <pre>{raw}</pre>
+        <h2>RulesAgent Scores</h2>
+        <ul class="summary-list">
+          <li><span>Overall</span><strong>{rules_summary['overall']:.3f}</strong></li>
+          <li><span>Easy</span><strong>{rules_summary['easy']:.3f}</strong></li>
+          <li><span>Medium</span><strong>{rules_summary['medium']:.3f}</strong></li>
+          <li><span>Hard</span><strong>{rules_summary['hard']:.3f}</strong></li>
+        </ul>
       </section>
       <section>
-        <h2>Agent Output</h2>
-        <pre>{cleaned}</pre>
+        <h2>RandomAgent Scores</h2>
+        <ul class="summary-list">
+          <li><span>Overall</span><strong>{random_summary['overall']:.3f}</strong></li>
+          <li><span>Easy</span><strong>{random_summary['easy']:.3f}</strong></li>
+          <li><span>Medium</span><strong>{random_summary['medium']:.3f}</strong></li>
+          <li><span>Hard</span><strong>{random_summary['hard']:.3f}</strong></li>
+        </ul>
       </section>
       <section>
-        <h2>Risk Report</h2>
-        <ul>{risk_items}</ul>
+        <h2>RulesAgent Failure Counts</h2>
+        <ul>{render_failures(rules_failures)}</ul>
       </section>
       <section>
-        <h2>Failure Reasons</h2>
-        <ul>{failures or "<li>None</li>"}</ul>
+        <h2>RandomAgent Failure Counts</h2>
+        <ul>{render_failures(random_failures)}</ul>
       </section>
-    </div>
-  </div>
+    </section>
+
+    {''.join(showcase_sections)}
+  </main>
 </body>
 </html>"""
 
-    with open(output_path, "w", encoding="utf-8") as handle:
-        handle.write(html)
+    output_path.write_text(html_body, encoding="utf-8")
 
 
 def main():
     base_url = os.getenv("OPENENV_BASE_URL", "http://localhost:7860")
-    reset_response = requests.post(f"{base_url}/reset", timeout=30)
-    reset_response.raise_for_status()
-    observation = reset_response.json()["observation"]
 
-    if observation["content_format"] == "json":
-        content = "{\"service\":\"payments\",\"owner_email\":\"[REDACTED]\",\"on_call\":\"[REDACTED]\",\"api_key\":\"[REDACTED]\",\"status\":\"rotate before deploy\"}"
-        action = {"action_type": "rewrite", "content": content, "notes": "demo json rewrite"}
-    elif "No obvious high-risk markers detected" in observation["risk_report"]:
-        action = {"action_type": "bypass", "content": observation["data_chunk"], "notes": "demo bypass"}
-    else:
-        content = observation["data_chunk"].replace("aria.cole@acme-retail.com", "[REDACTED]").replace("4155550132", "[REDACTED]").replace("sk-live-ACME99887766", "[REDACTED]")
-        action = {"action_type": "redact", "content": content, "notes": "demo redaction"}
+    random_records, random_summary, random_failures = run_episode(base_url, "RandomAgent", random_agent_logic)
+    rules_records, rules_summary, rules_failures = run_episode(base_url, "RulesAgent", rules_agent_logic)
 
-    step_response = requests.post(f"{base_url}/step", json=action, timeout=30)
-    step_response.raise_for_status()
-    payload = step_response.json()
+    output_path = Path(os.path.abspath("release_desk_demo.html"))
+    generate_html_report(output_path, rules_records, random_records, rules_summary, random_summary, rules_failures, random_failures)
+    webbrowser.open(output_path.as_uri())
 
-    output_path = os.path.abspath("release_desk_demo.html")
-    generate_html_report(observation, action, payload, output_path)
-    webbrowser.open(f"file://{output_path}")
-    print(json.dumps(payload["reward"], indent=2))
+    print(json.dumps({
+        "random_summary": random_summary,
+        "rules_summary": rules_summary,
+        "random_failures": random_failures,
+        "rules_failures": rules_failures,
+        "report": str(output_path),
+    }, indent=2))
 
 
 if __name__ == "__main__":

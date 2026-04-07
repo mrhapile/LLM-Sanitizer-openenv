@@ -1,24 +1,45 @@
 # Validation Guide
 
-## API Smoke Test
+## Fast path
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 7860
-curl -X POST http://localhost:7860/reset
-curl -X POST http://localhost:7860/step -H "Content-Type: application/json" -d '{"action_type":"bypass","content":"Operations update\nThe billing queue returned to normal latency after the deploy.\nNext review: Wednesday at 14:00.\nOwner: Billing Ops","notes":"safe"}'
-curl http://localhost:7860/state
+python scripts/run_release_checks.py
 ```
 
-## Unit Tests
+This runs tests, starts the API, executes the benchmark, and generates the demo report.
+
+## Unit and API tests
 
 ```bash
 pytest -q
 ```
 
-## Baseline Runner
+## Local API smoke test
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 7860
+curl http://localhost:7860/
+curl http://localhost:7860/healthz
+curl -X POST http://localhost:7860/reset
+curl http://localhost:7860/state
+```
+
+## Baseline runner
 
 ```bash
 python inference.py
+```
+
+Optional benchmark export:
+
+```bash
+BENCHMARK_OUTPUT_JSON=benchmark.json python inference.py
+```
+
+## Demo report
+
+```bash
+python demo.py
 ```
 
 ## Docker
@@ -26,4 +47,12 @@ python inference.py
 ```bash
 docker build -t release-desk-openenv .
 docker run -p 7860:7860 release-desk-openenv
+curl http://localhost:7860/healthz
 ```
+
+## Hugging Face Space notes
+
+- Use Docker Space mode
+- expose port `7860`
+- use `/healthz` as the health route
+- add the `openenv` tag

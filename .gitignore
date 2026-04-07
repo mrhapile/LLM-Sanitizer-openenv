@@ -5,6 +5,8 @@
 __pycache__/
 node_modules/
 venv/
+.DS_Store
+benchmark.json
 # Generated Audit Reports
 *.html
 audit_report_*.html

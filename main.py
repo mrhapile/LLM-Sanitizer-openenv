@@ -14,6 +14,16 @@ def root():
         "status": "ok",
         "environment": "release_desk",
         "documents": env.max_steps,
+        "tasks": ["easy", "medium", "hard"],
+        "actions": ["redact", "rewrite", "escalate", "bypass"],
+    }
+
+
+@app.get("/healthz")
+def healthz():
+    return {
+        "status": "ok",
+        "documents": env.max_steps,
     }
 
 

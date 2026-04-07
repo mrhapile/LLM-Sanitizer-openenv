@@ -1,5 +1,12 @@
-venv/
-__pycache__/
-.git/
-.env
+.git
+.gitignore
+.pytest_cache
+__pycache__
 *.pyc
+*.pyo
+*.pyd
+.DS_Store
+venv
+.venv
+release_desk_demo.html
+benchmark.json

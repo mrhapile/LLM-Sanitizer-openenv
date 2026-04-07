@@ -18,6 +18,10 @@ def tokenize(text: str) -> List[str]:
     return re.findall(r"[A-Za-z0-9_\-\[\]\.]+", (text or "").lower())
 
 
+def compact_string(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
 def token_overlap_ratio(reference_text: str, candidate_text: str) -> float:
     reference_tokens = Counter(tokenize(reference_text))
     candidate_tokens = Counter(tokenize(candidate_text))
@@ -37,3 +41,12 @@ def removal_ratio(text: str, forbidden_values: Iterable[str]) -> float:
 
     removed = sum(1 for value in values if value not in (text or ""))
     return removed / len(values)
+
+
+def target_removed(text: str, value: str, match_mode: str = "literal") -> bool:
+    candidate = text or ""
+    if not value:
+        return True
+    if match_mode == "compact":
+        return compact_string(value) not in compact_string(candidate)
+    return value not in candidate

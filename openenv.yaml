@@ -14,12 +14,18 @@ observations:
   - task_type
   - task_name
   - instruction
+  - policy_mode
   - content_format
   - data_chunk
   - risk_report
+  - adversarial_signals
+  - preferred_action
   - attempts_left
   - documents_remaining
+  - cumulative_score
 tasks:
   - customer_support_cleanup
   - structured_config_repair
   - contextual_deidentification
+  - prompt_injection_cleanup
+  - obfuscated_secret_removal

@@ -10,22 +10,36 @@ def env():
     return ReleaseDeskEnv()
 
 
-def test_reset_returns_first_document(env):
+def test_reset_returns_rich_observation(env):
     obs = env.reset()
     assert obs.document_id == "easy_ticket_redaction"
     assert obs.task_type == "easy"
+    assert obs.policy_mode == "training_safe"
+    assert obs.preferred_action == "redact"
     assert obs.documents_remaining == env.max_steps
+    assert obs.cumulative_score == 0.0
 
 
-def test_step_advances_state(env):
+def test_step_returns_extended_reward_and_info(env):
     obs = env.reset()
-    action = Action(action_type="redact", content=obs.data_chunk.replace("aria.cole@acme-retail.com", "[REDACTED]").replace("4155550132", "[REDACTED]").replace("sk-live-ACME99887766", "[REDACTED]"))
+    action = Action(
+        action_type="redact",
+        content=obs.data_chunk
+        .replace("aria.cole@acme-retail.com", "[REDACTED]")
+        .replace("4155550132", "[REDACTED]")
+        .replace("sk-live-ACME99887766", "[REDACTED]"),
+        notes="literal cleanup",
+    )
     next_obs, reward, done, info = env.step(action)
 
-    assert reward.score > 0.8
+    assert reward.score == 1.0
+    assert reward.policy_ratio == 1.0
+    assert reward.action_ratio == 1.0
+    assert reward.adversarial_ratio == 1.0
+    assert info["document_id"] == "easy_ticket_redaction"
+    assert info["detected_sensitive_types"] == ["api_key", "email", "phone"]
     assert done is False
     assert next_obs.document_id == "easy_safe_bypass"
-    assert info["document_id"] == "easy_ticket_redaction"
 
 
 def test_invalid_action_is_rejected_without_advancing(env):
@@ -54,11 +68,32 @@ def test_escalation_budget_is_enforced(env):
     assert "escalation_budget_exhausted" in info["failure_reasons"]
 
 
+def test_state_tracks_task_averages_and_failures(env):
+    obs = env.reset()
+    env.step(
+        Action(
+            action_type="redact",
+            content=obs.data_chunk
+            .replace("aria.cole@acme-retail.com", "[REDACTED]")
+            .replace("4155550132", "[REDACTED]")
+            .replace("sk-live-ACME99887766", "[REDACTED]"),
+        )
+    )
+    obs = env._get_observation()
+    env.step(Action(action_type="bypass", content=obs.data_chunk))
+    state = env.state()
+
+    assert state["task_average_scores"]["easy"] == 1.0
+    assert state["failure_counts"] == {}
+    assert state["current_document_id"] == "easy_vendor_email_cleanup"
+
+
 def test_done_after_all_documents(env):
     obs = env.reset()
     while True:
-        action_type = "bypass" if "No obvious high-risk markers detected" in obs.risk_report else "rewrite"
-        obs, _, done, _ = env.step(Action(action_type=action_type, content="[REDACTED]"))
+        action_type = obs.preferred_action
+        content = obs.data_chunk if action_type == "bypass" else "[REDACTED]"
+        obs, _, done, _ = env.step(Action(action_type=action_type, content=content))
         if done:
             break
 
