@@ -3,6 +3,7 @@ import random
 import re
 import json
 import time
+import sys
 from collections import deque
 import requests
 from openai import OpenAI
@@ -395,26 +396,29 @@ def evaluate_agent(agent_name, agent_func, base_url="http://localhost:7860"):
     
     return avg_score, used_fallback
 
-if __name__ == "__main__":
-    base_url = "http://localhost:7860" # Can be swapped to HF Space URL later
+
+def run_benchmark(api_key=None, model_name=None, dataset_name=None, api_base=None, base_url="http://localhost:7860"):
+    dataset_name = (dataset_name or os.getenv("DATASET_NAME", "default")).strip()
+    api_key = (api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+    api_base = (api_base or os.getenv("API_BASE_URL", "https://api.openai.com/v1")).strip()
+    model_name = (model_name or os.getenv("MODEL_NAME", "gpt-4o")).strip()
+
     results = {}
+
+    print(f"\nUsing dataset: {dataset_name}")
 
     # 1. Run Baseline Agents
     results["RandomAgent"] = evaluate_agent("RandomAgent", random_agent_logic, base_url)
     results["RegexAgent"] = evaluate_agent("RegexAgent", regex_agent_logic, base_url)
 
     # 2. Setup LLM Client based on Hackathon rules
-    api_key = os.getenv("OPENAI_API_KEY")
-    api_base = os.getenv("API_BASE_URL", "https://api.openai.com/v1") 
-    model_name = os.getenv("MODEL_NAME", "gpt-4o")
-
     rate_limiter = None
 
     if not api_key:
         print("\n[!] Skipping LLMAgent: Please set your OPENAI_API_KEY in the .env file")
     else:
         client = OpenAI(api_key=api_key, base_url=api_base)
-        
+
         # Pass the client and model into the agent logic using a lambda
         llm_wrapper = lambda obs: llm_agent_logic(obs, client, model_name, rate_limiter)
         results["LLMAgent"] = evaluate_agent("LLMAgent", llm_wrapper, base_url)
@@ -430,3 +434,57 @@ if __name__ == "__main__":
         else:
             print(f"{agent.ljust(15)} -> Score: {score:0.2f}")
     print("="*40)
+
+    return results
+
+
+def _collect_run_config():
+    api_key = input("api key: ").strip()
+    model_name = input("model name: ").strip()
+    dataset = input("dataset: ").strip()
+
+    if not model_name:
+        model_name = os.getenv("MODEL_NAME", "gpt-4o")
+    if not dataset:
+        dataset = "default"
+
+    return {
+        "api_key": api_key,
+        "model_name": model_name,
+        "dataset": dataset,
+    }
+
+
+def run_start_cli():
+    print("Type 'start' to run inference, or 'exit' to quit.")
+    while True:
+        command = input("command> ").strip().lower()
+
+        if command in {"exit", "quit"}:
+            print("Exiting.")
+            return
+
+        if command != "start":
+            print("Unknown command. Use 'start' or 'exit'.")
+            continue
+
+        config = _collect_run_config()
+        run_benchmark(
+            api_key=config["api_key"],
+            model_name=config["model_name"],
+            dataset_name=config["dataset"],
+        )
+        return
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "start":
+        config = _collect_run_config()
+        run_benchmark(
+            api_key=config["api_key"],
+            model_name=config["model_name"],
+            dataset_name=config["dataset"],
+        )
+    elif len(sys.argv) > 1 and sys.argv[1].lower() == "run":
+        run_benchmark()
+    else:
+        run_start_cli()
