@@ -18,10 +18,21 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
+from api_key_utils import get_api_key_env
+
 
 ROOT = Path(__file__).resolve().parent
-VENV_BIN = ROOT / "venv" / "bin"
-PYTHON = VENV_BIN / "python" if VENV_BIN.exists() else Path(sys.executable)
+
+
+def _resolve_python_bin() -> Path:
+    for env_name in (".venv", "venv"):
+        candidate = ROOT / env_name / "bin" / "python"
+        if candidate.exists():
+            return candidate
+    return Path(sys.executable)
+
+
+PYTHON = _resolve_python_bin()
 REPORT_FILE = ROOT / "release_desk_demo.html"
 API_URL = "http://127.0.0.1:7860"
 API_HEALTH_URL = f"{API_URL}/healthz"
@@ -48,7 +59,7 @@ def doctor():
     checks.append(("Python 3.10+", py_ok, f"Using {v.major}.{v.minor}.{v.micro}"))
     
     # venv active
-    venv_ok = VENV_BIN.exists() and hasattr(sys, 'real_prefix') or (
+    venv_ok = PYTHON.exists() and hasattr(sys, 'real_prefix') or (
         hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix
     )
     checks.append(("venv active", venv_ok, sys.prefix))
@@ -79,13 +90,14 @@ def doctor():
     env_file = ROOT / ".env"
     env_ok = env_file.exists()
     api_key_ok = False
+    api_key_name = None
     if env_ok:
-        with open(env_file) as f:
-            content = f.read()
-            api_key_ok = "OPENAI_API_KEY" in content
+        api_key_env = get_api_key_env()
+        api_key_ok = api_key_env is not None
+        api_key_name = api_key_env[0] if api_key_env else None
     checks.append((".env exists", env_ok, "Not found" if not env_ok else "OK"))
     if env_ok:
-        checks.append(("OPENAI_API_KEY set", api_key_ok, "Not found" if not api_key_ok else "OK"))
+        checks.append(("API key set", api_key_ok, api_key_name or "Not found"))
     
     # Port 7860 availability
     import socket

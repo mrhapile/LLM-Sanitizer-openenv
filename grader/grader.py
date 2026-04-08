@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 from grader.grading import structure_score
 from grader.normalization import PLACEHOLDER, target_removed, token_overlap_ratio
+from grader.risk_report import build_risk_report
 
 
 ESCALATION_SCORE = 0.35
@@ -13,6 +14,8 @@ class ReleaseDeskGrader:
     def __init__(self, manifest_path: str = "data/tasks.json"):
         with open(manifest_path, "r", encoding="utf-8") as handle:
             self.tasks: List[Dict[str, Any]] = json.load(handle)
+        for task in self.tasks:
+            task["risk_report"] = build_risk_report(task["original_text"], task.get("content_format", "text"))
 
     def get_task(self, idx: int) -> Dict[str, Any]:
         return self.tasks[idx]

@@ -63,6 +63,39 @@ def test_demo_run_endpoint_with_rules_agent():
     assert payload["reward"]["leak_free_ratio"] == 1.0
 
 
+def test_demo_run_risk_report_reflects_sample_content():
+    response = client.post(
+        "/demo/run",
+        json={
+            "text": "Escalation owner: NOC\nVendor contact: remy.lopez@supplyline.net\nSession secret: sk-session-SUPPLY7788",
+            "task_type": "easy",
+            "policy_mode": "external_sharing",
+            "content_format": "email",
+            "agent": "rules",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert any("remy.lopez@supplyline.net" in item for item in payload["risk_report"])
+    assert any("sk-session-SUPPLY7788" in item for item in payload["risk_report"])
+
+
+def test_demo_run_risk_report_is_safe_when_input_is_safe():
+    response = client.post(
+        "/demo/run",
+        json={
+            "text": "Operations update\nThe billing queue returned to normal latency after the deploy.",
+            "task_type": "easy",
+            "policy_mode": "training_safe",
+            "content_format": "email",
+            "agent": "rules",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["risk_report"] == ["No obvious high-risk markers detected"]
+
+
 def test_demo_compare_endpoint():
     response = client.post(
         "/demo/compare",
