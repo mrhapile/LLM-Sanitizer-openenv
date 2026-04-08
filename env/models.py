@@ -1,6 +1,6 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 
 TaskType = Literal["easy", "medium", "hard"]
@@ -23,6 +23,12 @@ class Observation(BaseModel):
     documents_remaining: int
     cumulative_score: float
 
+    @field_serializer("cumulative_score")
+    def serialize_cumulative_score(self, value: float):
+        if value in {0, 1, 0.0, 1.0}:
+            return int(value)
+        return value
+
 
 class Action(BaseModel):
     action_type: ActionType
@@ -39,6 +45,21 @@ class Reward(BaseModel):
     policy_ratio: float
     action_ratio: float
     adversarial_ratio: float
+
+    @field_serializer(
+        "score",
+        "progress",
+        "leak_free_ratio",
+        "utility_ratio",
+        "format_ratio",
+        "policy_ratio",
+        "action_ratio",
+        "adversarial_ratio",
+    )
+    def serialize_reward_value(self, value: float):
+        if value in {0, 1, 0.0, 1.0}:
+            return int(value)
+        return value
 
 
 class ResetRequest(BaseModel):

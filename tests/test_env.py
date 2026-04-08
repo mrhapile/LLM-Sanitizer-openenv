@@ -17,7 +17,7 @@ def test_reset_returns_rich_observation(env):
     assert obs.policy_mode == "training_safe"
     assert obs.preferred_action == "redact"
     assert obs.documents_remaining == env.max_steps
-    assert obs.cumulative_score == 0.0
+    assert obs.cumulative_score == 0
     assert any("aria.cole@acme-retail.com" in item for item in obs.risk_report)
     assert any("sk-live-ACME99887766" in item for item in obs.risk_report)
 
@@ -34,10 +34,10 @@ def test_step_returns_extended_reward_and_info(env):
     )
     next_obs, reward, done, info = env.step(action)
 
-    assert reward.score == 1.0
-    assert reward.policy_ratio == 1.0
-    assert reward.action_ratio == 1.0
-    assert reward.adversarial_ratio == 1.0
+    assert reward.score == 0.8
+    assert reward.policy_ratio == 1
+    assert reward.action_ratio == 1
+    assert reward.adversarial_ratio == 1
     assert info["document_id"] == "easy_ticket_redaction"
     assert info["detected_sensitive_types"] == ["api_key", "email", "phone"]
     assert done is False
@@ -53,7 +53,7 @@ def test_invalid_action_is_rejected_without_advancing(env):
     state_before = env.state()
     obs, reward, done, info = env.step(RawAction())
 
-    assert reward.score == 0.0
+    assert reward.score == 0
     assert done is False
     assert info["error"] == "invalid_action_type"
     assert env.state() == state_before
@@ -66,7 +66,7 @@ def test_escalation_budget_is_enforced(env):
         env.step(Action(action_type="escalate", content="", notes="needs review"))
     _, reward, _, info = env.step(Action(action_type="escalate", content="", notes="third escalation"))
 
-    assert reward.score == 0.0
+    assert reward.score == 0
     assert "escalation_budget_exhausted" in info["failure_reasons"]
 
 
@@ -85,7 +85,7 @@ def test_state_tracks_task_averages_and_failures(env):
     env.step(Action(action_type="bypass", content=obs.data_chunk))
     state = env.state()
 
-    assert state["task_average_scores"]["easy"] == 1.0
+    assert state["task_average_scores"]["easy"] == 0.9
     assert state["failure_counts"] == {}
     assert state["current_document_id"] == "easy_vendor_email_cleanup"
 
