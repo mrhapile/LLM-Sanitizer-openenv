@@ -49,23 +49,23 @@ def run_cmd(cmd, env=None, check=True):
 
 def doctor():
     """Pre-flight checks: Python, venv, dependencies, config."""
-    print("\n🔍 Release Desk Pre-flight Doctor\n")
-    
+    print("\nRelease Desk Pre-flight Doctor\n")
+
     checks = []
-    
+
     # Python version
     v = sys.version_info
     py_ok = v >= (3, 10)
     checks.append(("Python 3.10+", py_ok, f"Using {v.major}.{v.minor}.{v.micro}"))
-    
+
     # venv active
     venv_ok = PYTHON.exists() and hasattr(sys, 'real_prefix') or (
         hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix
     )
     checks.append(("venv active", venv_ok, sys.prefix))
-    
+
     # Import core modules
-    core_imports = ["fastapi", "pydantic", "spacy", "pandas", "requests", "openai"]
+    core_imports = ["fastapi", "pydantic", "requests", "openai", "openenv"]
     imports_ok = True
     missing = []
     for mod in core_imports:
@@ -75,17 +75,7 @@ def doctor():
             imports_ok = False
             missing.append(mod)
     checks.append(("Dependencies installed", imports_ok, f"Missing: {', '.join(missing)}" if missing else "All OK"))
-    
-    # spaCy model
-    spacy_model_ok = False
-    try:
-        import spacy
-        spacy.load("en_core_web_sm")
-        spacy_model_ok = True
-    except:
-        pass
-    checks.append(("spaCy model en_core_web_sm", spacy_model_ok, "Not installed" if not spacy_model_ok else "OK"))
-    
+
     # .env config
     env_file = ROOT / ".env"
     env_ok = env_file.exists()
@@ -99,6 +89,10 @@ def doctor():
     if env_ok:
         checks.append(("API key set", api_key_ok, api_key_name or "Not found"))
     
+    # Required repo assets
+    checks.append(("openenv.yaml exists", (ROOT / "openenv.yaml").exists(), "Missing" if not (ROOT / "openenv.yaml").exists() else "OK"))
+    checks.append(("Dockerfile exists", (ROOT / "Dockerfile").exists(), "Missing" if not (ROOT / "Dockerfile").exists() else "OK"))
+
     # Port 7860 availability
     import socket
     port_ok = True
@@ -113,16 +107,16 @@ def doctor():
     
     # Print results
     for name, ok, detail in checks:
-        symbol = "✅" if ok else "❌"
+        symbol = "[ok]" if ok else "[x]"
         print(f"{symbol} {name.ljust(30)} {detail}")
-    
+
     print()
     all_ok = all(ok for _, ok, _ in checks)
     if all_ok:
-        print("✨ All checks passed! Ready to run.\n")
+        print("All checks passed. Ready to run.\n")
         return 0
     else:
-        print("⚠️  Some checks failed. Fix above issues before running.\n")
+        print("Some checks failed. Fix above issues before running.\n")
         return 1
 
 
@@ -142,14 +136,14 @@ def wait_for_health(timeout: float = 30.0) -> bool:
 
 def serve():
     """Start the FastAPI server."""
-    print(f"\n🚀 Starting Release Desk API on {API_URL}\n")
+    print(f"\nStarting Release Desk API on {API_URL}\n")
     cmd = [str(PYTHON), "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "7860"]
     return run_cmd(cmd, check=False)
 
 
 def demo():
     """Run inference + demo. Requires API to be running."""
-    print(f"\n📊 Running inference and generating demo report...\n")
+    print(f"\nRunning inference and generating demo report...\n")
     
     env = os.environ.copy()
     env["OPENENV_BASE_URL"] = API_URL
@@ -164,7 +158,7 @@ def demo():
     
     # Open report
     if REPORT_FILE.exists():
-        print(f"\n📂 Opening report: {REPORT_FILE}\n")
+        print(f"\nOpening report: {REPORT_FILE}\n")
         webbrowser.open(f"file://{REPORT_FILE}")
     
     return 0
@@ -172,7 +166,7 @@ def demo():
 
 def run_all():
     """Full orchestration: start API (bg), run demo, cleanup."""
-    print("\n🎯 Release Desk: Full Run\n")
+    print("\nRelease Desk: Full Run\n")
     
     # Pre-flight
     if doctor() != 0:
@@ -180,23 +174,23 @@ def run_all():
         return 1
     
     # Start API in background
-    print(f"\n🔧 Starting API in background...\n")
+        print(f"\nStarting API in background...\n")
     server_cmd = [str(PYTHON), "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "7860"]
     server = subprocess.Popen(server_cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     try:
         # Wait for health
-        print("⏳ Waiting for API to become healthy...")
+        print("Waiting for API to become healthy...")
         if not wait_for_health(timeout=30):
-            print("❌ API failed to start. Check logs.\n")
+            print("API failed to start. Check logs.\n")
             return 1
-        print("✅ API is healthy\n")
+        print("API is healthy\n")
         
         # Run demo
         env = os.environ.copy()
         env["OPENENV_BASE_URL"] = API_URL
         
-        print("📊 Running inference and generating report...\n")
+        print("Running inference and generating report...\n")
         cmd = [str(PYTHON), "inference.py", API_URL]
         run_cmd(cmd, env=env)
         
@@ -205,21 +199,21 @@ def run_all():
         
         # Open report
         if REPORT_FILE.exists():
-            print(f"\n✨ Report ready: {REPORT_FILE}\n")
-            print("📂 Opening in browser...\n")
+            print(f"\nReport ready: {REPORT_FILE}\n")
+            print("Opening in browser...\n")
             webbrowser.open(f"file://{REPORT_FILE}")
         
         return 0
     
     finally:
-        print("\n🧹 Cleaning up...\n")
+        print("\nCleaning up...\n")
         server.terminate()
         try:
             server.wait(timeout=5)
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait(timeout=5)
-        print("✅ Done.\n")
+        print("Done.\n")
 
 
 def main():

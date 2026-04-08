@@ -140,17 +140,17 @@ Difficulty tiers weight these components differently so hard tasks emphasize pol
 
 The benchmark runner in [inference.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/inference.py) provides:
 
-- `RandomAgent`
-- `RulesAgent`
-- `LLMAgent` via the OpenAI API
+- the required OpenEnv submission log format: `[START]`, `[STEP]`, `[END]`
+- `LLMAgent` calls through the OpenAI client with `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
+- deterministic local fallback behavior if the remote model call fails
 
-The runner prints deterministic per-tier scores and failure counts. If the OpenAI API call fails because of quota or provider issues, the benchmark still completes and reports the local baselines.
-
-Sample local benchmark result:
+Sample local inference output:
 
 ```text
-RandomAgent: overall=0.225 easy=0.411 medium=0.000 hard=0.263
-RulesAgent: overall=0.971 easy=1.000 medium=0.916 hard=0.998
+[START] task=full-suite env=release_desk model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action=redact reward=1.00 done=false error=null
+[STEP] step=2 action=rewrite reward=0.87 done=false error=null
+[END] success=true steps=9 score=0.971 rewards=1.00,1.00,1.00,1.00,0.87,0.88,1.00,1.00,0.99
 ```
 
 ## How To Run
@@ -173,13 +173,15 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-#### 2. Configure credentials (optional for local testing)
+#### 2. Configure credentials
 
-Copy `.env.example` to `.env` and add your OpenAI API key:
+Set the variables expected by the hackathon runner:
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export HF_TOKEN="your-token"
 ```
 
 #### 3. Check your setup
@@ -276,7 +278,9 @@ Recommended live judge flow:
 python inference.py
 ```
 
-Optional benchmark export:
+This emits only the required `[START]`, `[STEP]`, and `[END]` stdout lines.
+
+Optional benchmark export for the judge demo:
 
 ```bash
 BENCHMARK_OUTPUT_JSON=benchmark.json python inference.py
@@ -348,8 +352,9 @@ This command:
 ### Optional OpenAI baseline
 
 ```bash
-export OPENAI_API_KEY=...
-export MODEL_NAME=gpt-4o-mini
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4o-mini"
+export HF_TOKEN="your-openai-compatible-token"
 python inference.py
 ```
 
@@ -379,6 +384,38 @@ Current verification in this repo:
 - unit tests for environment state, graders, normalization, and API metadata
 - in-process FastAPI smoke tests
 - live HTTP benchmark smoke test against `uvicorn`
+
+## Pre-Submission Checklist
+
+Run these before you submit:
+
+```bash
+source venv/bin/activate
+pytest -q
+openenv validate
+python inference.py
+python scripts/run_release_checks.py
+```
+
+If Docker Desktop is running, verify the container locally:
+
+```bash
+docker build -t release-desk-openenv .
+docker run --rm -p 7860:7860 release-desk-openenv
+curl -X POST http://127.0.0.1:7860/reset -H "Content-Type: application/json" -d '{}'
+```
+
+If your Hugging Face Space is already deployed, run the bundled validator:
+
+```bash
+./scripts/validate-submission.sh https://YOUR-SPACE.hf.space .
+```
+
+That script checks:
+
+- live `POST /reset` on the Space
+- `docker build`
+- `openenv validate`
 
 ## Docker
 
@@ -416,3 +453,4 @@ Recommended HF configuration:
 - [inference.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/inference.py) - baseline runner
 - [demo.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/demo.py) - judge-facing HTML report
 - [scripts/run_release_checks.py](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/scripts/run_release_checks.py) - one-command smoke runner
+- [scripts/validate-submission.sh](/Users/mrhapile/Hackathon/LLM-Sanitizer-openenv/scripts/validate-submission.sh) - pre-submit validator for HF Space, Docker, and OpenEnv
