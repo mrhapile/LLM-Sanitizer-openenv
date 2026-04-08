@@ -7,7 +7,9 @@ from typing import Callable, Dict, Tuple
 
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
+
+from api_key_utils import get_api_key_env
 
 load_dotenv()
 
@@ -25,6 +27,20 @@ Rules:
    - rewrite for structure repair, de-identification, or adversarial cleanup
    - escalate only when safe output cannot be produced confidently
 Return strict JSON: {"action_type":"...","content":"...","notes":"..."}"""
+
+
+def _to_safe_text(value, max_len: int | None = None) -> str:
+    if value is None:
+        text = ""
+    elif isinstance(value, str):
+        text = value
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value)
+    if max_len is not None:
+        return text[:max_len]
+    return text
 
 
 def _repair_json(text: str) -> str:
@@ -132,22 +148,37 @@ def parse_json_forgiving(content):
 
 
 def llm_agent_logic(obs: Dict, client: OpenAI, model_name: str) -> Dict:
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(obs)},
-        ],
-        response_format={"type": "json_object"},
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(obs)},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+    except BadRequestError as exc:
+        # Some OpenAI-compatible providers do not support strict json_object mode.
+        if "json_validate_failed" not in str(exc) and "response_format" not in str(exc):
+            raise
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+        )
     parsed = parse_json_forgiving(response.choices[0].message.content)
     action_type = parsed.get("action_type", "escalate")
     if action_type not in SUPPORTED_ACTIONS:
         action_type = "escalate"
+
+    # Keep payload compatible with the FastAPI Action model to avoid 422 errors.
+    content = _to_safe_text(parsed.get("content", ""))
+    notes = _to_safe_text(parsed.get("notes", ""), max_len=280)
+
     return {
         "action_type": action_type,
-        "content": parsed.get("content", ""),
-        "notes": parsed.get("notes", ""),
+        "content": content,
+        "notes": notes,
     }
 
 
@@ -197,16 +228,18 @@ def run_benchmark(base_url: str = "http://localhost:7860"):
         "RulesAgent": evaluate_agent("RulesAgent", rules_agent_logic, base_url),
     }
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key_env = get_api_key_env()
     model_name = os.getenv("MODEL_NAME", "gpt-4o-mini").strip()
-    if api_key:
-        client = OpenAI(api_key=api_key)
+    api_base_url = os.getenv("API_BASE_URL", os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).strip()
+    if api_key_env:
+        api_key_name, api_key = api_key_env
+        client = OpenAI(api_key=api_key, base_url=api_base_url)
         try:
             results["LLMAgent"] = evaluate_agent("LLMAgent", lambda obs: llm_agent_logic(obs, client, model_name), base_url)
         except Exception as exc:
-            print(f"LLMAgent skipped after API failure: {type(exc).__name__}: {exc}")
+            print(f"LLMAgent skipped after API failure using {api_key_name}: {type(exc).__name__}: {exc}")
     else:
-        print("LLMAgent skipped: OPENAI_API_KEY not set")
+        print("LLMAgent skipped: no API key env var found")
 
     if output_path := os.getenv("BENCHMARK_OUTPUT_JSON", "").strip():
         summary = {

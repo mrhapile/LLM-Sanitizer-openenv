@@ -18,6 +18,8 @@ def test_reset_returns_rich_observation(env):
     assert obs.preferred_action == "redact"
     assert obs.documents_remaining == env.max_steps
     assert obs.cumulative_score == 0.0
+    assert any("aria.cole@acme-retail.com" in item for item in obs.risk_report)
+    assert any("sk-live-ACME99887766" in item for item in obs.risk_report)
 
 
 def test_step_returns_extended_reward_and_info(env):

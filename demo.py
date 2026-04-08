@@ -3,11 +3,17 @@ import json
 import os
 import webbrowser
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
+from dotenv import load_dotenv
+from openai import OpenAI
 
-from inference import random_agent_logic, rules_agent_logic
+from api_key_utils import get_api_key_env
+from inference import llm_agent_logic, random_agent_logic, rules_agent_logic
+
+
+load_dotenv()
 
 
 SHOWCASE_TASKS = {"easy", "medium", "hard"}
@@ -65,6 +71,28 @@ def render_failures(failure_counts: Dict[str, int]) -> str:
     if not failure_counts:
         return "<li>None</li>"
     return "".join(f"<li><strong>{html.escape(name)}</strong>: {count}</li>" for name, count in failure_counts.items())
+
+
+def render_score_items(summary: Dict[str, float]) -> str:
+  return (
+    f"<li><span>Overall</span><strong>{summary['overall']:.3f}</strong></li>"
+    f"<li><span>Easy</span><strong>{summary['easy']:.3f}</strong></li>"
+    f"<li><span>Medium</span><strong>{summary['medium']:.3f}</strong></li>"
+    f"<li><span>Hard</span><strong>{summary['hard']:.3f}</strong></li>"
+  )
+
+
+def maybe_build_llm_agent() -> Tuple[Optional[Callable[[Dict], Dict]], str]:
+  api_key_env = get_api_key_env()
+  if not api_key_env:
+    return None, "LLMAgent skipped: no API key env var found"
+
+  api_key_name, api_key = api_key_env
+  model_name = os.getenv("MODEL_NAME", "gpt-4o-mini").strip()
+  api_base_url = os.getenv("API_BASE_URL", os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).strip()
+  client = OpenAI(api_key=api_key, base_url=api_base_url)
+
+  return lambda obs: llm_agent_logic(obs, client, model_name), f"LLMAgent configured via {api_key_name}"
 
 
 def render_case(agent_name: str, record: Dict) -> str:
@@ -125,7 +153,18 @@ def render_case(agent_name: str, record: Dict) -> str:
     """
 
 
-def generate_html_report(output_path: Path, rules_records: List[Dict], random_records: List[Dict], rules_summary: Dict[str, float], random_summary: Dict[str, float], rules_failures: Dict[str, int], random_failures: Dict[str, int]) -> None:
+def generate_html_report(
+  output_path: Path,
+  rules_records: List[Dict],
+  random_records: List[Dict],
+  rules_summary: Dict[str, float],
+  random_summary: Dict[str, float],
+  rules_failures: Dict[str, int],
+  random_failures: Dict[str, int],
+  llm_summary: Optional[Dict[str, float]] = None,
+  llm_failures: Optional[Dict[str, int]] = None,
+  llm_status: Optional[str] = None,
+) -> None:
     rules_cases = build_case_lookup(rules_records)
     random_cases = build_case_lookup(random_records)
 
@@ -145,6 +184,27 @@ def generate_html_report(output_path: Path, rules_records: List[Dict], random_re
             </section>
             """
         )
+
+    llm_summary_card = ""
+    llm_failures_card = ""
+    llm_status_card = ""
+    if llm_summary is not None and llm_failures is not None:
+        llm_summary_card = f"""
+      <section>
+        <h2>LLMAgent Scores</h2>
+        <ul class="summary-list">{render_score_items(llm_summary)}</ul>
+      </section>"""
+        llm_failures_card = f"""
+      <section>
+        <h2>LLMAgent Failure Counts</h2>
+        <ul>{render_failures(llm_failures)}</ul>
+      </section>"""
+    elif llm_status:
+        llm_status_card = f"""
+      <section>
+        <h2>LLMAgent Status</h2>
+        <p>{html.escape(llm_status)}</p>
+      </section>"""
 
     html_body = f"""<!DOCTYPE html>
 <html lang="en">
@@ -377,22 +437,13 @@ def generate_html_report(output_path: Path, rules_records: List[Dict], random_re
     <section class="summary-grid">
       <section>
         <h2>RulesAgent Scores</h2>
-        <ul class="summary-list">
-          <li><span>Overall</span><strong>{rules_summary['overall']:.3f}</strong></li>
-          <li><span>Easy</span><strong>{rules_summary['easy']:.3f}</strong></li>
-          <li><span>Medium</span><strong>{rules_summary['medium']:.3f}</strong></li>
-          <li><span>Hard</span><strong>{rules_summary['hard']:.3f}</strong></li>
-        </ul>
+        <ul class="summary-list">{render_score_items(rules_summary)}</ul>
       </section>
       <section>
         <h2>RandomAgent Scores</h2>
-        <ul class="summary-list">
-          <li><span>Overall</span><strong>{random_summary['overall']:.3f}</strong></li>
-          <li><span>Easy</span><strong>{random_summary['easy']:.3f}</strong></li>
-          <li><span>Medium</span><strong>{random_summary['medium']:.3f}</strong></li>
-          <li><span>Hard</span><strong>{random_summary['hard']:.3f}</strong></li>
-        </ul>
+        <ul class="summary-list">{render_score_items(random_summary)}</ul>
       </section>
+      {llm_summary_card}
       <section>
         <h2>RulesAgent Failure Counts</h2>
         <ul>{render_failures(rules_failures)}</ul>
@@ -401,6 +452,8 @@ def generate_html_report(output_path: Path, rules_records: List[Dict], random_re
         <h2>RandomAgent Failure Counts</h2>
         <ul>{render_failures(random_failures)}</ul>
       </section>
+      {llm_failures_card}
+      {llm_status_card}
     </section>
 
     {''.join(showcase_sections)}
@@ -417,8 +470,31 @@ def main():
     random_records, random_summary, random_failures = run_episode(base_url, "RandomAgent", random_agent_logic)
     rules_records, rules_summary, rules_failures = run_episode(base_url, "RulesAgent", rules_agent_logic)
 
+    llm_summary: Optional[Dict[str, float]] = None
+    llm_failures: Optional[Dict[str, int]] = None
+    llm_status = ""
+
+    llm_agent_func, llm_status = maybe_build_llm_agent()
+    if llm_agent_func is not None:
+        try:
+            _, llm_summary, llm_failures = run_episode(base_url, "LLMAgent", llm_agent_func)
+            llm_status = "LLMAgent included in report"
+        except Exception as exc:
+            llm_status = f"LLMAgent skipped after API failure: {type(exc).__name__}: {exc}"
+
     output_path = Path(os.path.abspath("release_desk_demo.html"))
-    generate_html_report(output_path, rules_records, random_records, rules_summary, random_summary, rules_failures, random_failures)
+    generate_html_report(
+        output_path,
+        rules_records,
+        random_records,
+        rules_summary,
+        random_summary,
+        rules_failures,
+        random_failures,
+        llm_summary,
+        llm_failures,
+        llm_status,
+    )
     webbrowser.open(output_path.as_uri())
 
     print(json.dumps({
@@ -426,6 +502,9 @@ def main():
         "rules_summary": rules_summary,
         "random_failures": random_failures,
         "rules_failures": rules_failures,
+    "llm_summary": llm_summary,
+    "llm_failures": llm_failures,
+    "llm_status": llm_status,
         "report": str(output_path),
     }, indent=2))
 

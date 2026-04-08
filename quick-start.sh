@@ -11,17 +11,24 @@ echo "🎯 Release Desk Quick-Start"
 echo "============================"
 echo ""
 
-# Check if venv exists; create if not
-if [ ! -d "venv" ]; then
-    echo "📦 Creating virtual environment..."
-    python3 -m venv venv
+# Prefer .venv (used by local dev); fall back to venv for compatibility.
+ENV_DIR=".venv"
+if [ ! -d "$ENV_DIR" ] && [ -d "venv" ]; then
+    ENV_DIR="venv"
+fi
+
+# Create env if neither exists.
+if [ ! -d "$ENV_DIR" ]; then
+    echo "📦 Creating virtual environment at .venv..."
+    python3 -m venv .venv
+    ENV_DIR=".venv"
     echo "✅ venv created"
     echo ""
 fi
 
 # Activate venv
 echo "🔌 Activating venv..."
-source venv/bin/activate
+source "$ENV_DIR/bin/activate"
 echo "✅ venv activated"
 echo ""
 
