@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from env.environment import ReleaseDeskEnv
-from env.models import Action
+from env.models import Action, ResetRequest
 from demo_service import DemoCompareRequest, DemoService, DemoRunRequest
 
 app = FastAPI(title="OpenEnv Release Desk")
@@ -24,7 +24,7 @@ def root():
         "status": "ok",
         "environment": "release_desk",
         "documents": env.max_steps,
-        "tasks": ["easy", "medium", "hard"],
+        "tasks": [task["task_name"] for task in env.available_tasks()],
         "actions": ["redact", "rewrite", "escalate", "bypass"],
     }
 
@@ -48,8 +48,11 @@ def healthz():
 
 
 @app.post("/reset")
-def reset():
-    observation = env.reset()
+def reset(request: ResetRequest | None = None):
+    try:
+        observation = env.reset(request.task_name if request else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"observation": observation.model_dump()}
 
 
@@ -67,6 +70,11 @@ def step(action: Action):
 @app.get("/state")
 def state():
     return env.state()
+
+
+@app.get("/tasks")
+def tasks():
+    return {"tasks": env.available_tasks()}
 
 
 @app.get("/demo/samples")

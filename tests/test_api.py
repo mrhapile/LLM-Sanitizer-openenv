@@ -115,3 +115,13 @@ def test_demo_compare_endpoint():
 def test_demo_report_endpoint_returns_file_or_not_found():
     response = client.get("/demo/report")
     assert response.status_code in {200, 404}
+
+
+def test_tasks_endpoint_and_reset_filter():
+    tasks = client.get("/tasks")
+    assert tasks.status_code == 200
+    assert [task["task_name"] for task in tasks.json()["tasks"]] == ["easy", "medium", "hard"]
+
+    reset = client.post("/reset", json={"task_name": "medium"})
+    assert reset.status_code == 200
+    assert reset.json()["observation"]["task_type"] == "medium"

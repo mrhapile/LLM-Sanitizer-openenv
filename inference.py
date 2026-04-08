@@ -21,9 +21,10 @@ MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "").strip()
 OPENENV_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:7860").rstrip("/")
-TASK_NAME = os.getenv("RELEASE_DESK_TASK", "full-suite").strip()
+TASK_NAME = os.getenv("RELEASE_DESK_TASK", "all").strip()
 BENCHMARK = os.getenv("RELEASE_DESK_BENCHMARK", "release_desk").strip()
 MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
+TASK_SEQUENCE = ["easy", "medium", "hard"]
 
 SUPPORTED_ACTIONS = {"redact", "rewrite", "escalate", "bypass"}
 SYSTEM_PROMPT = """You are reviewing enterprise documents before they are released into an LLM training or retrieval pipeline.
@@ -272,51 +273,54 @@ def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=api_key) if api_key else None
     server_process = maybe_start_local_server(OPENENV_BASE_URL)
 
-    rewards: List[float] = []
-    steps_taken = 0
-    success = False
-    score = 0.0
     agent = build_agent(client)
 
     model_label = MODEL_NAME
     if not api_key:
         model_label = f"{MODEL_NAME}-fallback"
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=model_label)
-
     try:
-        reset_response = requests.post(f"{OPENENV_BASE_URL}/reset", timeout=30)
-        reset_response.raise_for_status()
-        payload = reset_response.json()
-        observation = payload["observation"]
-        done = False
+        selected_tasks = TASK_SEQUENCE if TASK_NAME in {"all", "full-suite", "full_suite"} else [TASK_NAME]
+        for task_name in selected_tasks:
+            rewards: List[float] = []
+            steps_taken = 0
+            success = False
+            score = 0.0
 
-        for step in range(1, MAX_STEPS + 1):
-            if observation is None or done:
-                break
+            log_start(task=task_name, env=BENCHMARK, model=model_label)
+            reset_response = requests.post(f"{OPENENV_BASE_URL}/reset", json={"task_name": task_name}, timeout=30)
+            reset_response.raise_for_status()
+            payload = reset_response.json()
+            observation = payload["observation"]
+            done = False
 
-            action_payload, action_error = agent(observation)
-            step_response = requests.post(f"{OPENENV_BASE_URL}/step", json=action_payload, timeout=30)
-            step_response.raise_for_status()
-            step_payload = step_response.json()
+            for step in range(1, MAX_STEPS + 1):
+                if observation is None or done:
+                    break
 
-            reward = float(step_payload["reward"]["score"])
-            done = bool(step_payload["done"])
-            info = step_payload.get("info", {})
-            error_value = info.get("error") or action_error
+                action_payload, action_error = agent(observation)
+                step_response = requests.post(f"{OPENENV_BASE_URL}/step", json=action_payload, timeout=30)
+                step_response.raise_for_status()
+                step_payload = step_response.json()
 
-            rewards.append(reward)
-            steps_taken = step
+                reward = float(step_payload["reward"]["score"])
+                done = bool(step_payload["done"])
+                info = step_payload.get("info", {})
+                error_value = info.get("error") or action_error
 
-            action_str = _to_safe_text(action_payload.get("action_type", "unknown"))
-            log_step(step=step, action=action_str, reward=reward, done=done, error=error_value)
+                rewards.append(reward)
+                steps_taken = step
 
-            observation = step_payload.get("observation")
-            if done:
-                break
+                action_str = _to_safe_text(action_payload.get("action_type", "unknown"))
+                log_step(step=step, action=action_str, reward=reward, done=done, error=error_value)
 
-        score = normalized_score(rewards, steps_taken)
-        success = score > 0.0
+                observation = step_payload.get("observation")
+                if done:
+                    break
+
+            score = normalized_score(rewards, steps_taken)
+            success = score > 0.0
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     finally:
         if server_process is not None:
             server_process.terminate()
@@ -325,7 +329,6 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 server_process.kill()
                 server_process.wait(timeout=5)
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 if __name__ == "__main__":

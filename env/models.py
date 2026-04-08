@@ -39,3 +39,7 @@ class Reward(BaseModel):
     policy_ratio: float
     action_ratio: float
     adversarial_ratio: float
+
+
+class ResetRequest(BaseModel):
+    task_name: Optional[str] = None

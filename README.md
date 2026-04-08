@@ -72,6 +72,7 @@ The FastAPI service exposes the standard interface:
 - `POST /reset`
 - `POST /step`
 - `GET /state`
+- `GET /tasks`
 - `GET /healthz`
 - `GET /demo`
 - `GET /demo/samples`
@@ -132,6 +133,14 @@ Each task declares:
 - required safe phrases
 - policy checks
 - adversarial checks
+
+The environment now exposes three validator-visible task families:
+
+- `easy` via `POST /reset {"task_name":"easy"}`
+- `medium` via `POST /reset {"task_name":"medium"}`
+- `hard` via `POST /reset {"task_name":"hard"}`
+
+Each family has its own deterministic episode and is graded independently.
 
 ## Grading and reward shaping
 
@@ -243,6 +252,7 @@ curl http://localhost:7860/
 curl http://localhost:7860/healthz
 curl -X POST http://localhost:7860/reset
 curl http://localhost:7860/state
+curl http://localhost:7860/tasks
 ```
 
 #### Open the live judge demo
@@ -289,11 +299,18 @@ python inference.py
 ```
 
 This emits only the required `[START]`, `[STEP]`, and `[END]` stdout lines.
+By default it runs three episodes: `easy`, `medium`, and `hard`.
 
 Optional benchmark export for the judge demo:
 
 ```bash
 BENCHMARK_OUTPUT_JSON=benchmark.json python inference.py
+```
+
+Run a single task family:
+
+```bash
+RELEASE_DESK_TASK=hard python inference.py
 ```
 
 #### Call the demo API directly

@@ -24,8 +24,6 @@ observations:
   - documents_remaining
   - cumulative_score
 tasks:
-  - customer_support_cleanup
-  - structured_config_repair
-  - contextual_deidentification
-  - prompt_injection_cleanup
-  - obfuscated_secret_removal
+  - easy
+  - medium
+  - hard

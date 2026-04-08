@@ -23,6 +23,12 @@ class ReleaseDeskGrader:
     def count(self) -> int:
         return len(self.tasks)
 
+    def task_types(self) -> List[str]:
+        return sorted({task["task_type"] for task in self.tasks})
+
+    def tasks_for_type(self, task_type: str) -> List[Dict[str, Any]]:
+        return [task for task in self.tasks if task["task_type"] == task_type]
+
     def _target_removal_ratio(self, content: str, targets: List[Dict[str, str]]) -> float:
         if not targets:
             return 1.0
