@@ -1,3 +1,13 @@
+---
+title: LLM Sanitizer
+emoji: 🤖
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Release Desk OpenEnv
 
 Release Desk is a deterministic OpenEnv environment for a real enterprise workflow: reviewing internal documents before they are released into an LLM training or retrieval pipeline. An agent must decide whether to pass a document through unchanged, redact literal secrets, rewrite a document into a safe form, or escalate for human review.
