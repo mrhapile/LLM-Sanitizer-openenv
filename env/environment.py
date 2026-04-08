@@ -1,9 +1,40 @@
 import json
+import re
 from env.models import Observation, Action, Reward
 from grader.grader import VaultGrader
 
 
 SUPPORTED_ACTION_TYPES = {"redact", "delete", "bypass"}
+
+EMAIL_REGEX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+API_KEY_REGEXES = [
+    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
+    re.compile(r"\bgsk-[A-Za-z0-9]{20,}\b"),
+]
+
+
+def _mask_value(value):
+    if len(value) <= 8:
+        return "[REDACTED]"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _detect_risk_report(text):
+    risk_report = []
+
+    email_matches = EMAIL_REGEX.findall(text)
+    if email_matches:
+        masked_matches = ", ".join(_mask_value(match) for match in email_matches)
+        risk_report.append(f"Email detected: {masked_matches}")
+
+    api_key_matches = []
+    for pattern in API_KEY_REGEXES:
+        api_key_matches.extend(pattern.findall(text))
+    if api_key_matches:
+        masked_matches = ", ".join(_mask_value(match) for match in api_key_matches)
+        risk_report.append(f"API key detected: {masked_matches}")
+
+    return risk_report
 
 
 class VaultSanitizerEnv:
@@ -35,16 +66,9 @@ class VaultSanitizerEnv:
     def _get_observation(self):
         data = self.dataset[self.current_index]["input"]
 
-        risk_report = []
-
-        if "@" in data:
-            risk_report.append("Possible email detected")
-        if "sk-" in data:
-            risk_report.append("Possible API key detected")
-
         return Observation(
             data_chunk=data,
-            risk_report=risk_report,
+            risk_report=_detect_risk_report(data),
             attempts_left=max(0, self.max_steps - self.steps_taken)
         )
 

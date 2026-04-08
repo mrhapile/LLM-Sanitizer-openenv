@@ -18,6 +18,40 @@ def test_reset_returns_observation(env):
     assert hasattr(obs, "risk_report")
     assert hasattr(obs, "attempts_left")
 
+
+def test_risk_report_detects_email_and_api_key_via_regex(env):
+    env.dataset = [
+        {"input": "Email me at alice@example.com for details."},
+        {"input": "Use key sk-1234567890abcdef1234 for access."},
+        {"input": "Nothing sensitive here."},
+    ]
+    env.current_index = 0
+
+    obs1 = env.reset()
+    assert any("Email detected:" in item for item in obs1.risk_report)
+
+    env.current_index = 1
+    obs2 = env._get_observation()
+    assert any("API key detected:" in item for item in obs2.risk_report)
+
+    env.current_index = 2
+    obs3 = env._get_observation()
+    assert obs3.risk_report == []
+
+
+def test_risk_report_varies_per_sample(env):
+    env.dataset = [
+        {"input": "Email alice@example.com is here."},
+        {"input": "API key sk-1234567890abcdef1234 is here."},
+    ]
+    env.current_index = 0
+
+    first = env._get_observation().risk_report
+    env.current_index = 1
+    second = env._get_observation().risk_report
+
+    assert first != second
+
 # ---------------------------
 # TEST 2: STEP BASIC
 # ---------------------------
