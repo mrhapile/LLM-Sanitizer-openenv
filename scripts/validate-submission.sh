@@ -41,15 +41,7 @@ run_with_timeout() {
   elif command -v gtimeout &>/dev/null; then
     gtimeout "$secs" "$@"
   else
-    "$@" &
-    local pid=$!
-    ( sleep "$secs" && kill "$pid" 2>/dev/null ) &
-    local watcher=$!
-    wait "$pid" 2>/dev/null
-    local rc=$?
-    kill "$watcher" 2>/dev/null
-    wait "$watcher" 2>/dev/null
-    return $rc
+    "$@"
   fi
 }
 
@@ -77,6 +69,12 @@ if ! REPO_DIR="$(cd "$REPO_DIR" 2>/dev/null && pwd)"; then
   printf "Error: directory '%s' not found\n" "${2:-.}"
   exit 1
 fi
+
+OPENENV_BIN="${REPO_DIR}/venv/bin/openenv"
+if [ ! -x "$OPENENV_BIN" ] && [ -x "${REPO_DIR}/.venv/bin/openenv" ]; then
+  OPENENV_BIN="${REPO_DIR}/.venv/bin/openenv"
+fi
+
 PING_URL="${PING_URL%/}"
 export PING_URL
 PASS=0
@@ -153,14 +151,18 @@ fi
 
 log "${BOLD}Step 3/3: Running openenv validate${NC} ..."
 
-if ! command -v openenv &>/dev/null; then
+if command -v openenv &>/dev/null; then
+  OPENENV_CMD="openenv"
+elif [ -x "$OPENENV_BIN" ]; then
+  OPENENV_CMD="$OPENENV_BIN"
+else
   fail "openenv command not found"
   hint "Install it: pip install openenv-core"
   stop_at "Step 3"
 fi
 
 VALIDATE_OK=false
-VALIDATE_OUTPUT=$(cd "$REPO_DIR" && openenv validate 2>&1) && VALIDATE_OK=true
+VALIDATE_OUTPUT=$(cd "$REPO_DIR" && "$OPENENV_CMD" validate 2>&1) && VALIDATE_OK=true
 
 if [ "$VALIDATE_OK" = true ]; then
   pass "openenv validate passed"
